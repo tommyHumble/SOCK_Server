@@ -1,0 +1,48 @@
+# Servers list 
+[
+  {
+    "host": "192.168.226.115",
+    "ports": {
+      "TCP": [8080,8088, 7090],
+      "UDP": [6070,8090]
+    }
+  },
+  {
+    "host": "192.168.226.74",
+    "ports": {
+      "TCP": [8080,8088],
+      "UDP": [6070]
+    }
+  },
+  {
+    "host": "192.168.0.100",
+    "ports": {
+      "TCP": [8080,8088],
+      "UDP": []
+    }
+  }
+]
+
+
+
+# Main Request (checking 3242 on Servers) (str)
+mainRequest = {
+  "type": "mainRequest",
+  "message": "PORT 3242 STATUS"
+}
+
+
+
+# Main Respond (status of 3242 on Server) (str)
+mainRspond = {
+  "type": "mainRespond",
+  "message": "3242 OK"
+}
+
+
+
+# 
+mainRequest = {
+  "type": "mainRequest",
+  "message": "PORT 3242 STATUS"
+}
