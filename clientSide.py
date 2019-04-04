@@ -1,101 +1,95 @@
-import socketserver, json, threading, socket, sys, time
+import socketserver, json, threading, time, socket
 
 # имя клиента
 hostName = socket.gethostname()
-
 # ip клиента
 hostAddress = socket.gethostbyname(hostName)
 
-# флаг для завершения всех потоков
-threadFlag = True
-
-# запрос на проверку порта 3242 (string)
-mainRequest = """{
-  "type": "mainRequest",
+mainRespond = """{
+  "type": "mainRespond",
   "command": "mainCheck",
-  "message": "PORT 3242 STATUS"
+  "message": "OK"
 }"""
 
-# запрос на проверку оставшихся портов (py obj)
-simpleRequest = '''{
-  "type": "request",
-  "command": "check",
-  "message": "PORT STATUS"
-}'''
+portListRespond = """{
+  "type": "portListRespond",
+  "command": "mainCheck",
+  "message": "OK"
+}"""
 
-# Считывание json файла со списком серверов
-serverListFileName = sys.argv[1]
-with open(serverListFileName, 'r') as f_r:
-    serverList = json.load(f_r)
-    
-# Список потоков (проверяемых серверов)
-checkList = []
+activePortListRespond = """{
+  "type": "activePortListRespond",
+  "command": "mainCheck",
+  "message": "OK"
+}"""
 
-# Класс поток, который осуществляет проверку серверов
-class myThread(threading.Thread):
-    def __init__(self, host, port, portCheck):
-        self.host = host
-        self.port = port
-        self.portCheck = portCheck
-        threading.Thread.__init__(self)
-    def run(self):
-        global threadFlag
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if threadFlag:
-            try:
-                sock.connect((self.host, self.port))
-            except:
-                threadFlag = False
-                return 0
-            else:
-                sock.sendall(bytes(mainRequest, encoding='utf-8'))
-                rcv = sock.recv(1024).decode()
-                print(rcv)
-        else:
-            return 0
+activePortRespond = """{
+  "type": "activePortRespond",
+  "command": "mainCheck",
+  "message": "OK"
+}"""
 
-        portList = {
-            "type": "portList",
-            "command": "check",
-            "ports": self.portCheck
-            }
-        portList = json.dumps(portList)
-        sock.sendall(bytes(portList, encoding="utf-8"))
-        recv = sock.recv(1024).decode()
-        print(recv)
-        recv = sock.recv(1024).decode()
-        print(recv)
-
-        for prt, number in self.portCheck.items():
+class MyTCPRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        while True:
+            msg = self.request.recv(1024)
+            c_str = msg.decode()
+            p_f = json.loads(c_str)
+            print(p_f)
+            if p_f["type"] == "mainRequest":
+                self.request.sendall(bytes(mainRespond, encoding='utf-8'))
+            elif p_f["type"] == "portList":
+                self.request.sendall(bytes(portListRespond, encoding='utf-8'))
+                print(p_f["ports"])
+                for prt, number in p_f["ports"].items():
                     if number != []:
-                        if prt == "TCP":
-                            for n in number:
-                                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
-                                    prtSock.connect((self.host, n))
-                                    prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
-                                    rcv = prtSock.recv(1024).decode()
-                                    print(rcv)
-                        elif prt == "UDP":
-                            for n in number:
-                                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
-                                    prtSock.sendto(bytes(simpleRequest, encoding = "utf-8"), (self.host, n))
-                                    rcv = prtSock.recv(1024).decode()
-                                    print(rcv)
+                        for n in number:
+                            portThread = launchedPort(hostAddress, n, prt)
+                            portThread.start()
+                self.request.sendall(bytes(activePortListRespond, encoding='utf-8'))
+                break
 
-for srv in serverList:
-    thread = myThread(srv["host"], 8888, srv["ports"])
-    checkList.append(thread)
-    thread.start()
+class launchedPort(threading.Thread):
+    def __init__(self, host, port, protocol):
+        self.host = hostAddress
+        self.port = port
+        self.protocol = protocol
+        threading.Thread.__init__(self)
+        self.setDaemon(False)
+    def run(self):
+        if self.protocol == "TCP":
+            aServer = socketserver.TCPServer((self.host, self.port), mySecondaryTCPRequestHandler)
+            print("PORT {} IS TCP UP".format(self.port))
+            aServer.serve_forever()
+        elif self.protocol == "UDP":
+            aServer = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
+            print("PORT {} IS UDP UP".format(self.port))
+            aServer.serve_forever()
 
-time.sleep(1)
-print(checkList)
+class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        msg = self.request.recv(1024)
+        c_str = msg.decode()
+        p_f = json.loads(c_str)
+        print(p_f, "TCP")
+        self.request.sendall(bytes(activePortRespond, encoding='utf-8'))
 
-for srv in checkList:
-    print(srv.getName())
-    print(srv.isAlive())
-    if srv.isAlive():
-        srv.join()
-        print('STOPPED')
-    else:
-        print("ALREADY STOPPED")
-exit(0)
+class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
+    def handle(self):
+        msg = self.request[0].decode()
+        socket = self.request[1]
+        msg = json.loads(msg)
+        print(msg, "UDP")
+        socket.sendto(bytes(activePortRespond, encoding='utf-8'), self.client_address)
+
+def my_server1():
+    aServer = socketserver.TCPServer((hostAddress, 8888), MyTCPRequestHandler)
+    aServer.serve_forever()
+
+t1 = threading.Thread(target=my_server1)
+t1.start()
+print('SERVER IS LAUNCHED')
+
+while True:
+    time.sleep(30)
+    print(threading.activeCount(), "ACTIVE THREADS")
