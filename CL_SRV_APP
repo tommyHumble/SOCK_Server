@@ -1,10 +1,11 @@
 import socketserver, json, threading, time, socket, sys
 
 # Запрос отчета о выполнении полного цикла проверок на сервер
-reportRequest = """{
+reportRequest = {
   "type": "reportRequest",
   "message": "NEED REPORT"
-}"""
+}
+reportRequest = json.dumps(reportRequest)
 
 # Отчет о выполнении полного цикла проверки на сервере
 reportRespond = {
@@ -12,6 +13,7 @@ reportRespond = {
     "3242 status": "",
     "ports": {}
 }
+reportRespond = json.dumps(reportRespond)
 
 # имя клиента/сервера
 hostName = socket.gethostname()
@@ -83,6 +85,32 @@ mainCheckList = []
 
 def client():
     global mainCheckList, checkList
+
+    # Класс - поток. Экземплярами данного класса являются
+    # клиентские сокеты, через которые проходит соединение с
+    # проверяемыми портами на сервере
+    class mySecondaryThread(threading.Thread):
+
+        def __init__(self, host, port, protocol):
+            self.host = host
+            self.port = port
+            self.protocol = protocol
+            threading.Thread.__init__(self)
+        # при запуске экземпляра данного потока выполнится следующий блок
+        # который опросит проверяемые порты на сервере по соотв. протоколу
+        def run(self):
+            if self.protocol == "TCP":
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
+                    prtSock.connect((self.host, self.port))
+                    prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
+                    rcv = prtSock.recv(1024).decode()
+                    print(rcv)
+            elif self.protocol == "UDP":
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
+                    prtSock.sendto(bytes(simpleRequest, encoding="utf-8"), (self.host, self.port))
+                    rcv = prtSock.recv(1024).decode()
+                    print(rcv)
+
     # Класс - поток. Экземплярами данного класса являются
     # клиентские сокеты, через которые проходит соединение с сервером
     # каждый сокет (порт) в отдельном потоке
@@ -101,7 +129,7 @@ def client():
             global portList
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
             try:
-                sock.settimeout(3)                                              # сокращаем время на установление соединения с сервером
+                sock.settimeout(1)                                              # сокращаем время на установление соединения с сервером
                 print("trying to connect", self.host)
                 sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
                 print("connected", self.host)
@@ -140,27 +168,20 @@ def client():
 
             # получив подтверждение, начинаем опрашивать поочередно наши порты
             # с помощью with открываем соединение, ЗАПРОС - ОТВЕТ, закрываем соединение
-            for prt, number in self.portCheck.items():
-                        # [] - в случае если по данному протоколу не нужно поднимать никакого порта
-                        if number != []:
-                            if prt == "TCP":
-                                for n in number:
-                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
-                                        prtSock.connect((self.host, n))
-                                        prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
-                                        rcv = prtSock.recv(1024).decode()
-                                        print(rcv)
-                            elif prt == "UDP":
-                                for n in number:
-                                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
-                                        prtSock.sendto(bytes(simpleRequest, encoding = "utf-8"), (self.host, n))
-                                        rcv = prtSock.recv(1024).decode()
-                                        print(rcv)
+            for protocol, ports in self.portCheck.items():
+                for port in ports:
+                    portThread = mySecondaryThread(self.host, port, protocol)
+                    portThread.start()
+
+            time.sleep(1)
+            sock.sendall(bytes(reportRequest, encoding="utf-8"))
+            rcv = sock.recv(1024).decode()
+            print(rcv)
 
     # Создаем потоки, в вкоторых будет происходить проверка порта 3242
     # и дальнейшая проверка других портов, если все сервера доступны на 3242
     for srv in serverDic:
-        thread = myThread(srv["host"], 8888, srv["ports"])
+        thread = myThread(srv["host"], 3242, srv["ports"])
         checkList.append(thread)
         thread.start()
         print("THREAD GO GO GO GO")
