@@ -28,7 +28,8 @@
 # Main Request (checking 3242 on Servers) (str)
 mainRequest = {
   "type": "mainRequest",
-  "message": "PORT 3242 STATUS"
+  "message": "PORT 3242 STATUS",
+  "client": ""
 }
 
 
@@ -36,7 +37,8 @@ mainRequest = {
 # Main Respond (status of 3242 on Server) (str)
 mainRspond = {
   "type": "mainRespond",
-  "message": "3242 OK"
+  "message": "3242 OK",
+  "server": ""
 }
 
 
