@@ -54,6 +54,11 @@ reportRequest = """{
   "message": "NEED REPORT"
 }"""
 
+reportRespond = """{
+  "type": "reportRespond",
+  "message": "REPORT"
+}"""
+
 # Handler для обработки соедниений на порту 3242
 class MyTCPRequestHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -74,6 +79,9 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                 if p_f["type"] == "mainRequest":
                     self.request.sendall(bytes(mainRespond, encoding='utf-8'))
 
+                elif p_f["type"] == "reportRequest":
+                    self.request.sendall(bytes(reportRespond, encoding='utf-8'))
+
                 # ЗАПРОС - ОТВЕТ о получении списка проверяемых портов
                 elif p_f["type"] == "portList":
                     self.request.sendall(bytes(portListRespond, encoding='utf-8'))
@@ -89,7 +97,7 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
 
                     # ОТВЕТ о запуске всех портов (готов к проверке)
                     self.request.sendall(bytes(activePortListRespond, encoding='utf-8'))
-                    break
+                    #break
 
 # Класс - поток проверяемого порта. Экземплярами данного класаа являются
 # сервера TCP UDP поднятые на провереяемых портах
@@ -137,7 +145,7 @@ class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
         socket.sendto(bytes(simpleRespond, encoding='utf-8'), self.client_address)
 
 def my_server1():
-    aServer = socketserver.TCPServer((hostAddress, 8888), MyTCPRequestHandler)
+    aServer = socketserver.TCPServer((hostAddress, 3242), MyTCPRequestHandler)
     aServer.serve_forever()
 
 t1 = threading.Thread(target=my_server1)
