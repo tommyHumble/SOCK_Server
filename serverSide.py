@@ -4,23 +4,28 @@ import socketserver, json, threading, time, socket
 hostName = socket.gethostname()
 # ip клиента
 hostAddress = socket.gethostbyname(hostName)
+print(hostAddress)
 
 # Сервера проверяемых портов
 serverDic = {}
 
+# запрос на проверку порта 3242 (string)
+mainRequest = {
+  "type": "mainRequest",
+  "command": "mainCheck",
+  "message": "PORT 3242 STATUS",
+  "client": hostAddress
+}
+mainRequest = json.dumps(mainRequest)
+
 # Ответ о проверкке порта 3242
-mainRespond = """{
+mainRespond = {
   "type": "mainRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
-
-# Подтврждение закрытия порта 3242
-closeRespond = """{
-  "type": "closeRespond",
-  "command": "mainCheck",
-  "message": "CLOSED"
-}"""
+  "message": "OK",
+  "server": hostAddress
+}
+mainRespond = json.dumps(mainRespond)
 
 # Ответ о получении списка проверяемых портов
 portListRespond = """{
@@ -37,16 +42,21 @@ activePortListRespond = """{
 }"""
 
 # Ответ от проверяемого порта
-activePortRespond = """{
-  "type": "activePortRespond",
+simpleRespond = """{
+  "type": "simpleRespond",
   "command": "mainCheck",
   "message": "OK"
+}"""
+
+# Запрос отчета о выполнении полного цикла проверок на сервер
+reportRequest = """{
+  "type": "reportRequest",
+  "message": "NEED REPORT"
 }"""
 
 # Handler для обработки соедниений на порту 3242
 class MyTCPRequestHandler(socketserver.StreamRequestHandler):
     def handle(self):
-
         # Чтобы не разрывать соединение мы будем проверять получаемые сообщение в цикле,
         # выйдем из цикла и разорвем соединение по окончанию работы с клиентом
         while True:
@@ -56,16 +66,13 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                 p_f = json.loads(c_str)                 # преобразовали json строку в объект python
                 print(p_f)
             except:
+                break
                 pass
             else:
                 # Проверка типа полученного запроса
                 # ЗАПРОС - ОТВЕТ о проверке порта 3242
                 if p_f["type"] == "mainRequest":
                     self.request.sendall(bytes(mainRespond, encoding='utf-8'))
-
-                elif p_f["type"] == "closeRequest":
-                    self.request.sendall(bytes(closeRespond, encoding='utf-8'))
-                    break
 
                 # ЗАПРОС - ОТВЕТ о получении списка проверяемых портов
                 elif p_f["type"] == "portList":
@@ -119,7 +126,7 @@ class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
         c_str = msg.decode()
         p_f = json.loads(c_str)
         print(p_f, "TCP")
-        self.request.sendall(bytes(activePortRespond, encoding='utf-8'))
+        self.request.sendall(bytes(simpleRespond, encoding='utf-8'))
 
 class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
     def handle(self):
@@ -127,7 +134,7 @@ class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
         socket = self.request[1]
         msg = json.loads(msg)
         print(msg, "UDP")
-        socket.sendto(bytes(activePortRespond, encoding='utf-8'), self.client_address)
+        socket.sendto(bytes(simpleRespond, encoding='utf-8'), self.client_address)
 
 def my_server1():
     aServer = socketserver.TCPServer((hostAddress, 8888), MyTCPRequestHandler)
