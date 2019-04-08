@@ -4,7 +4,8 @@ import socketserver, json, threading, time, socket
 hostName = socket.gethostname()
 # ip клиента
 hostAddress = socket.gethostbyname(hostName)
-hostAddress = "192.168.226.115"
+hostAddress = "172.16.200.186"
+#hostAddress = "192.168.226.115"
 print(hostAddress)
 
 # Сервера проверяемых портов
@@ -174,8 +175,8 @@ class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
         p_f = json.loads(c_str)
         print(p_f)
         mySimpleRespond = simpleRespond.copy()
-        mySimpleRespond["protocol"] = "TCP"
-        mySimpleRespond["port"] = "AZAZA"
+        mySimpleRespond["protocol"] = p_f["protocol"]
+        mySimpleRespond["port"] = p_f["port"]
         mySimpleRespond = json.dumps(mySimpleRespond)
         self.request.sendall(bytes(mySimpleRespond, encoding='utf-8'))
 
@@ -186,8 +187,8 @@ class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
         msg = json.loads(msg)
         print(msg)
         mySimpleRespond = simpleRespond.copy()
-        mySimpleRespond["protocol"] = "UDP"
-        mySimpleRespond["port"] = "AZAZA"
+        mySimpleRespond["protocol"] = msg["protocol"]
+        mySimpleRespond["port"] = msg["port"]
         mySimpleRespond = json.dumps(mySimpleRespond)
         socket.sendto(bytes(mySimpleRespond, encoding='utf-8'), self.client_address)
 
