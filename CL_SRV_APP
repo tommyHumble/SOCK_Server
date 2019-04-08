@@ -1,20 +1,5 @@
 import socketserver, json, threading, time, socket, sys
 
-# Запрос отчета о выполнении полного цикла проверок на сервер
-reportRequest = {
-  "type": "reportRequest",
-  "message": "NEED REPORT"
-}
-reportRequest = json.dumps(reportRequest)
-
-# Отчет о выполнении полного цикла проверки на сервере
-reportRespond = {
-    "type": "reportRespond",
-    "3242 status": "",
-    "ports": {}
-}
-reportRespond = json.dumps(reportRespond)
-
 # имя клиента/сервера
 hostName = socket.gethostname()
 # ip клиента/сервера
@@ -43,7 +28,8 @@ mainRespond = json.dumps(mainRespond)
 portList = {
   "type": "portList",
   "command": "check",
-  "ports": None
+  "ports": None,
+  "client": hostAddress,
 }
 
 # Ответ о получении списка проверяемых портов
@@ -61,18 +47,43 @@ activePortListRespond = """{
 }"""
 
 # запрос на проверку порта по TCP или UDP
-simpleRequest = '''{
+simpleRequest = {
   "type": "request",
   "command": "check",
-  "message": "PORT STATUS"
-}'''
+  "message": "PORT STATUS",
+  "client": hostAddress,
+  "protocol": None,
+  "port": None
+}
+#simpleRequest = json.dumps(simpleRequest)
 
 # Ответ от проверяемого порта
-simpleRespond = """{
+simpleRespond = {
   "type": "simpleRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress,
+  "protocol": None,
+  "port": None
+}
+simpleRespond = json.dumps(simpleRespond)
+
+# Запрос отчета о выполнении полного цикла проверок на сервер
+reportRequest = {
+  "type": "reportRequest",
+  "message": "NEED REPORT",
+  "client": hostAddress
+}
+reportRequest = json.dumps(reportRequest)
+
+# Отчет о выполнении полного цикла проверки на сервере
+reportRespond = {
+    "type": "reportRespond",
+    "3242 status": "",
+    "ports": None,
+    "server": hostAddress
+}
+reportRespond = json.dumps(reportRespond)
 
 # Сервера проверяемых портов (server)
 portServerDic = {}
@@ -98,16 +109,29 @@ def client():
             threading.Thread.__init__(self)
         # при запуске экземпляра данного потока выполнится следующий блок
         # который опросит проверяемые порты на сервере по соотв. протоколу
+        # а также получит и выведет ответ от портов
         def run(self):
+            global simpleRequest
             if self.protocol == "TCP":
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
+                    prtSock.settimeout(1)
                     prtSock.connect((self.host, self.port))
-                    prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
+                    mySimpleRequest = simpleRequest.copy()
+                    mySimpleRequest["protocol"] = self.protocol
+                    mySimpleRequest["port"] = self.port
+                    mySimpleRequest = json.dumps(mySimpleRequest)
+                    prtSock.sendall(bytes(mySimpleRequest, encoding='utf-8'))
                     rcv = prtSock.recv(1024).decode()
                     print(rcv)
             elif self.protocol == "UDP":
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
-                    prtSock.sendto(bytes(simpleRequest, encoding="utf-8"), (self.host, self.port))
+                    prtSock.settimeout(1)
+                    prtSock.connect((self.host, self.port))
+                    mySimpleRequest = simpleRequest.copy()
+                    mySimpleRequest["protocol"] = self.protocol
+                    mySimpleRequest["port"] = self.port
+                    mySimpleRequest = json.dumps(mySimpleRequest)
+                    prtSock.sendto(bytes(mySimpleRequest, encoding="utf-8"), (self.host, self.port))
                     rcv = prtSock.recv(1024).decode()
                     print(rcv)
 
@@ -254,7 +278,7 @@ def server():
             self.port = port
             self.protocol = protocol
             threading.Thread.__init__(self)
-            self.setDaemon(False)
+            self.setDaemon(True)
 
         # Данная ф-ция описывает действия потока при его запуске (start())
         def run(self):
