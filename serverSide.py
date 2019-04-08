@@ -4,10 +4,20 @@ import socketserver, json, threading, time, socket
 hostName = socket.gethostname()
 # ip клиента
 hostAddress = socket.gethostbyname(hostName)
+hostAddress = "192.168.226.115"
 print(hostAddress)
 
 # Сервера проверяемых портов
 serverDic = {}
+
+# Сервер отвечающий за TCP соединение по 3242 (главный поток после MAIN)
+mainServer = None
+
+# список портов и их статусов
+portStatus = {
+    "TCP": {},
+    "UDP": {}
+}
 
 # запрос на проверку порта 3242 (string)
 mainRequest = {
@@ -28,36 +38,59 @@ mainRespond = {
 mainRespond = json.dumps(mainRespond)
 
 # Ответ о получении списка проверяемых портов
-portListRespond = """{
+portListRespond = {
   "type": "portListRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress
+}
+portListRespond = json.dumps(portListRespond)
 
 # Ответ о запуске проверяемых портов
-activePortListRespond = """{
+activePortListRespond = {
   "type": "activePortListRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress
+}
+activePortListRespond = json.dumps(activePortListRespond)
+
+# запрос на проверку порта по TCP или UDP
+simpleRequest = {
+  "type": "request",
+  "command": "check",
+  "message": "PORT STATUS",
+  "client": hostAddress,
+  "protocol": None,
+  "port": None
+}
+#simpleRequest = json.dumps(simpleRequest)
 
 # Ответ от проверяемого порта
-simpleRespond = """{
+simpleRespond = {
   "type": "simpleRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress,
+  "protocol": None,
+  "port": None
+}
+#simpleRespond = json.dumps(simpleRespond)
 
 # Запрос отчета о выполнении полного цикла проверок на сервер
-reportRequest = """{
+reportRequest = {
   "type": "reportRequest",
-  "message": "NEED REPORT"
-}"""
+  "message": "NEED REPORT",
+  "client": hostAddress
+}
+reportRequest = json.dumps(reportRequest)
 
-reportRespond = """{
+reportRespond = {
   "type": "reportRespond",
-  "message": "REPORT"
-}"""
+  "message": "REPORT",
+  "server": hostAddress
+}
+reportRespond = json.dumps(reportRespond)
 
 # Handler для обработки соедниений на порту 3242
 class MyTCPRequestHandler(socketserver.StreamRequestHandler):
@@ -110,55 +143,78 @@ class launchedPort(threading.Thread):
         self.port = port
         self.protocol = protocol
         threading.Thread.__init__(self)
-        self.setDaemon(False)
+        self.setDaemon(True)
 
     # Данная ф-ция описывает действия потока при его запуске (start())
     def run(self):
         global serverDic                                                # Словарь поднятых TCP UDP серверов для проверяемых портов (чтобы потом их положить)
         if self.protocol == "TCP":
-            aServer = socketserver.TCPServer((self.host, self.port), mySecondaryTCPRequestHandler)
-            serverDic[self.protocol, self.port] = aServer
-            print("PORT {} IS TCP UP".format(self.port))
-            print(serverDic)
-            aServer.serve_forever()
+            try:
+                aServer = socketserver.TCPServer((self.host, self.port), mySecondaryTCPRequestHandler)
+                serverDic[self.protocol, self.port] = aServer
+                print("PORT {} IS TCP UP".format(self.port))
+                print(serverDic)
+                aServer.serve_forever()
+            except:
+                print(self.port, self.protocol, "is already opened")
         elif self.protocol == "UDP":
-            aServer = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
-            serverDic[self.protocol, self.port] = aServer
-            print("PORT {} IS UDP UP".format(self.port))
-            print(serverDic)
-            aServer.serve_forever()
+            try:
+                aServer = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
+                serverDic[self.protocol, self.port] = aServer
+                print("PORT {} IS UDP UP".format(self.port))
+                print(serverDic)
+                aServer.serve_forever()
+            except:
+                print(self.port, self.protocol, "is already opened")
 
 class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
     def handle(self):
         msg = self.request.recv(1024)
         c_str = msg.decode()
         p_f = json.loads(c_str)
-        print(p_f, "TCP")
-        self.request.sendall(bytes(simpleRespond, encoding='utf-8'))
+        print(p_f)
+        mySimpleRespond = simpleRespond.copy()
+        mySimpleRespond["protocol"] = "TCP"
+        mySimpleRespond["port"] = "AZAZA"
+        mySimpleRespond = json.dumps(mySimpleRespond)
+        self.request.sendall(bytes(mySimpleRespond, encoding='utf-8'))
 
 class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
     def handle(self):
         msg = self.request[0].decode()
         socket = self.request[1]
         msg = json.loads(msg)
-        print(msg, "UDP")
-        socket.sendto(bytes(simpleRespond, encoding='utf-8'), self.client_address)
+        print(msg)
+        mySimpleRespond = simpleRespond.copy()
+        mySimpleRespond["protocol"] = "UDP"
+        mySimpleRespond["port"] = "AZAZA"
+        mySimpleRespond = json.dumps(mySimpleRespond)
+        socket.sendto(bytes(mySimpleRespond, encoding='utf-8'), self.client_address)
 
 def my_server1():
-    aServer = socketserver.TCPServer((hostAddress, 3242), MyTCPRequestHandler)
-    aServer.serve_forever()
+    global mainServer
+    mainServer= socketserver.TCPServer((hostAddress, 3242), MyTCPRequestHandler)
+    mainServer.serve_forever()
+    print("SERVER ON 3242 IS CLOSED")
 
-t1 = threading.Thread(target=my_server1)
-t1.start()
+mainThread = threading.Thread(target=my_server1)
+mainThread.start()
 print('SERVER IS LAUNCHED')
 
 while True:
-    time.sleep(5)
-    print(threading.activeCount(), "ACTIVE THREADS")
-    print(serverDic)
-    for i in serverDic.values():
-        i.shutdown()
-        i.server_close()                # вызывается для очистки сервера (сокета, если конкретнее) (self.socket.close())
-        print("DOOOWN B**CH")
-    serverDic = {}
-    print("I\'M CLEAN AND READY FOR WORK")
+    try:
+        time.sleep(5)
+        print(threading.activeCount(), "ACTIVE THREADS")
+        print(serverDic)
+    except KeyboardInterrupt:
+        mainServer.shutdown()
+        mainServer.server_close()
+        break
+
+exit(code="SERVER IS STOPPED")
+    # for i in serverDic.values():
+    #     i.shutdown()
+    #     i.server_close()                # вызывается для очистки сервера (сокета, если конкретнее) (self.socket.close())
+    #     print("DOOOWN B**CH")
+    # serverDic = {}
+    # print("I\'M CLEAN AND READY FOR WORK")
