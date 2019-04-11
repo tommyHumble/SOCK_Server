@@ -1,10 +1,33 @@
-import socketserver, json, threading, time, socket, sys
 
-# имя клиента/сервера
-hostName = socket.gethostname()
+import socketserver
+import json
+import threading
+import time
+import socket
+import logging
+import sys
+
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
 # ip клиента/сервера
-hostAddress = socket.gethostbyname(hostName)
-print(hostAddress)
+hostAddress = get_ip()
+
+# Настройка логгера
+logger = logging.getLogger("Server_Side")
+logger.setLevel(logging.DEBUG)
+fileHandler = logging.FileHandler("server_logs.log")
+fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(funcName)s")
+fileHandler.setFormatter(fileFormatter)
+logger.addHandler(fileHandler)
 
 # запрос на проверку порта 3242 (string)
 mainRequest = {
@@ -33,18 +56,22 @@ portList = {
 }
 
 # Ответ о получении списка проверяемых портов
-portListRespond = """{
+portListRespond = {
   "type": "portListRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress
+}
+portListRespond = json.dumps(portListRespond)
 
 # Ответ о запуске проверяемых портов
-activePortListRespond = """{
+activePortListRespond = {
   "type": "activePortListRespond",
   "command": "mainCheck",
-  "message": "OK"
-}"""
+  "message": "OK",
+  "server": hostAddress
+}
+activePortListRespond = json.dumps(activePortListRespond)
 
 # запрос на проверку порта по TCP или UDP
 simpleRequest = {
@@ -66,7 +93,7 @@ simpleRespond = {
   "protocol": None,
   "port": None
 }
-simpleRespond = json.dumps(simpleRespond)
+#simpleRespond = json.dumps(simpleRespond)
 
 # Запрос отчета о выполнении полного цикла проверок на сервер
 reportRequest = {
@@ -78,45 +105,50 @@ reportRequest = json.dumps(reportRequest)
 
 # Отчет о выполнении полного цикла проверки на сервере
 reportRespond = {
-    "type": "reportRespond",
-    "3242 status": "",
-    "ports": None,
-    "server": hostAddress
+  "type": "reportRespond",
+  "message": "REPORT",
+  "server": hostAddress,
+  "ports": {
+    "protocol": {
+      "UDP": {},
+      "TCP": {}
+    }
+  }
 }
-reportRespond = json.dumps(reportRespond)
+# reportRespond = json.dumps(reportRespond)
 
-# Сервера проверяемых портов (server)
-portServerDic = {}
+# Список экземпляров потоков серверов запущенных на портах {(8080, "UDP"): Thread Obj, ...}  (server)
+portThreadDic = {}
 
 # Список всех организуемых потоков (столько же, сколько проверяемых серверов) (client)
 checkList = []
 
 # Словарь проверяемых серверов (адрес хоста и статус порта 3242) (client)
-mainCheckList = []
+mainCheckDic = {"status": "OK"}
 
 def client():
-    global mainCheckList, checkList
+    global mainCheckDic, checkList
 
     # Класс - поток. Экземплярами данного класса являются
     # клиентские сокеты, через которые проходит соединение с
     # проверяемыми портами на сервере
     class mySecondaryThread(threading.Thread):
 
-        def __init__(self, host, port, protocol):
+        def __init__(self, host, port, protocol, reqPat):
             self.host = host
             self.port = port
             self.protocol = protocol
+            self.reqPat = reqPat
             threading.Thread.__init__(self)
         # при запуске экземпляра данного потока выполнится следующий блок
         # который опросит проверяемые порты на сервере по соотв. протоколу
         # а также получит и выведет ответ от портов
         def run(self):
-            global simpleRequest
             if self.protocol == "TCP":
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
                     prtSock.settimeout(1)
                     prtSock.connect((self.host, self.port))
-                    mySimpleRequest = simpleRequest.copy()
+                    mySimpleRequest = self.reqPat.copy()
                     mySimpleRequest["protocol"] = self.protocol
                     mySimpleRequest["port"] = self.port
                     mySimpleRequest = json.dumps(mySimpleRequest)
@@ -142,15 +174,15 @@ def client():
         # передаем ip хоста (клиентской машины)
         # порт на котором хотим организовать сокет
         # и словарь портов, которые сервер должен будет поднять на своей стороне
-        def __init__(self, host, port, portCheck):
+        def __init__(self, host, port, portCheck, portListPatt):
             self.host = host
             self.port = port
             self.portCheck = portCheck
+            self.portListPatt = portListPatt
             threading.Thread.__init__(self)
 
         # Данная ф-ция описывает, что будет происходить при запуске потока (start())
         def run(self):
-            global portList
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
             try:
                 sock.settimeout(1)                                              # сокращаем время на установление соединения с сервером
@@ -158,29 +190,32 @@ def client():
                 sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
                 print("connected", self.host)
             except:
-                mainCheckList.append('KEK')                                     # Если не удалось установить соединение с сервером, то в список мы добавляем блокирующее значение, которое говорит, что можно закругляться
+                mainCheckDic["status"] = "NOT OK"                               # Если не удалось установить соединение с сервером, то в список мы добавляем блокирующее значение, которое говорит, что можно закругляться
+                mainCheckDic[self.host] = "DOWN"
                 print(self.host, "HAVA SOME PROBLEMS")
                 #sock.close()
                 return 0                                                        # Выходим из ф-ции тем самым прерывая поток
             else:
                 sock.sendall(bytes(mainRequest, encoding='utf-8'))              # Если соединение установлено, нужно отправить запрос на подтверждение установки соединения
                 rcv = sock.recv(1024).decode()                                  # Получаем ответ на запрос, что подверждает, что соединение по 3242 установлено
-                mainCheckList.append([self.host, "UP"])                         # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
+                mainCheckDic[self.host] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
                 print(rcv)
 
             # проверяем список, всех ли мы опросили и все ли порты доступны
             # если нет, то говорим, что на каком-то порту проблемы и завершаем процесс
             while True:
-                if len(mainCheckList) == len(serverDic):
-                    if "KEK" in mainCheckList:
+                if len(mainCheckDic) == len(serverDic)+1:
+                    if mainCheckDic["status"] == "NOT OK":
                         print("SOME SERVER IS NOT UP")
+                        print(mainCheckDic)
                         return                                                  # Завершаем ф-цию и поток вместе с ней
                     else:
                         print("ALL SERVERS ARE UP")
+                        print(mainCheckDic)
                         break
 
             # формируем список портов, которые сервер должен будет поднять на своей стороне
-            portList = portList.copy()
+            portList = self.portListPatt.copy()
             portList["ports"] = self.portCheck
             portList = json.dumps(portList)
             print(portList)
@@ -194,10 +229,10 @@ def client():
             # с помощью with открываем соединение, ЗАПРОС - ОТВЕТ, закрываем соединение
             for protocol, ports in self.portCheck.items():
                 for port in ports:
-                    portThread = mySecondaryThread(self.host, port, protocol)
+                    portThread = mySecondaryThread(self.host, port, protocol, simpleRequest)
                     portThread.start()
 
-            time.sleep(1)
+            time.sleep(3)
             sock.sendall(bytes(reportRequest, encoding="utf-8"))
             rcv = sock.recv(1024).decode()
             print(rcv)
@@ -205,13 +240,12 @@ def client():
     # Создаем потоки, в вкоторых будет происходить проверка порта 3242
     # и дальнейшая проверка других портов, если все сервера доступны на 3242
     for srv in serverDic:
-        thread = myThread(srv["host"], 3242, srv["ports"])
+        thread = myThread(srv["host"], 3242, srv["ports"], portList)
         checkList.append(thread)
         thread.start()
         print("THREAD GO GO GO GO")
 
     print(checkList)            # список потоков в которыъ проверяются все сервера = колич-во серверов в json файле
-    print(mainCheckList)        # список всех серверов + статус порта 3242 + ключ о дальнейшей проверки
 
     # Проверка завершения всех вызванных потоков
     for srv in checkList:
