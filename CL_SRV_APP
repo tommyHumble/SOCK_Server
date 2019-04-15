@@ -353,7 +353,7 @@ class myThread(threading.Thread):
             loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python obj successfully")
             if pyMsg["type"] == "reportRespond":
                 print(pyMsg)
-                loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python obj successfully")
+                loggerCl.debug(f"reportRespond from {self.host} TCP {self.port} was decoded in python obj successfully")
             else:
                 loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved successfully. Expected reportRespond")
 
@@ -411,6 +411,8 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                     flag = "sendall repResp"
                     self.request.sendall(bytes(myReportRespond, encoding='utf-8'))
                     loggerS.debug(f"reportRespond was sent to {self.client_address[0]}")
+                    reportRespond["ports"]["protocol"]["TCP"] = {}
+                    reportRespond["ports"]["protocol"]["UDP"] = {}
                     continue
 
                 elif pyMsg["type"] == "portList":
@@ -428,6 +430,7 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                         # создаем и запускаем сервер на каждом из портов в отедьном потоке, если такого сервера еще нет
                         if (port, protocol) in portThreadDic.keys():
                             loggerS.debug(f"{protocol} server on {port} is already launched")
+                            reportRespond["ports"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "OK"}
                         else:
                             portThread = launchedPort(hostAddress, port, protocol)
                             portThread.start()
