@@ -21,13 +21,21 @@ def get_ip():
 # ip клиента/сервера
 hostAddress = get_ip()
 
-# Настройка логгера
-logger = logging.getLogger("Server_Side")
-logger.setLevel(logging.DEBUG)
+# Настройка логгера для сервера
+loggerS = logging.getLogger("Server_Side")
+loggerS.setLevel(logging.DEBUG)
 fileHandler = logging.FileHandler("server_logs.log")
 fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(funcName)s")
 fileHandler.setFormatter(fileFormatter)
-logger.addHandler(fileHandler)
+loggerS.addHandler(fileHandler)
+
+# Настройка логгера для клиента
+loggerCl = logging.getLogger("Client_Side")
+loggerCl.setLevel(logging.DEBUG)
+fileHandler = logging.FileHandler("client_logs.log")
+fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s - %(funcName)s")
+fileHandler.setFormatter(fileFormatter)
+loggerCl.addHandler(fileHandler)
 
 # запрос на проверку порта 3242 (string)
 mainRequest = {
@@ -69,9 +77,10 @@ activePortListRespond = {
   "type": "activePortListRespond",
   "command": "mainCheck",
   "message": "OK",
-  "server": hostAddress
+  "server": hostAddress,
+  "problematic ports": {}
 }
-activePortListRespond = json.dumps(activePortListRespond)
+#activePortListRespond = json.dumps(activePortListRespond)
 
 # запрос на проверку порта по TCP или UDP
 simpleRequest = {
@@ -115,7 +124,15 @@ reportRespond = {
     }
   }
 }
-# reportRespond = json.dumps(reportRespond)
+
+# Отчет со стороны клиента
+clientReport = {
+  "type": "clientReport",
+  "message": "REPORT",
+  "client": hostAddress,
+  "servers": {
+  }
+}
 
 # Список экземпляров потоков серверов запущенных на портах {(8080, "UDP"): Thread Obj, ...}  (server)
 portThreadDic = {}
@@ -129,356 +146,492 @@ checkList = []
 # Словарь проверенных серверов (адрес хоста и статус порта 3242) (client)
 mainCheckDic = {"status": "OK"}
 
-# Отчет со стороны клиента
-clientReport = {
-  "type": "clientReport",
-  "message": "REPORT",
-  "client": hostAddress,
-  "servers": {
-  }
-}
 
-def client():
-    #global mainCheckDic, checkList
-    # Класс - поток. Экземплярами данного класса являются
-    # клиентские сокеты, через которые проходит соединение с
-    # проверяемыми портами на сервере
-    class mySecondaryThread(threading.Thread):
-        def __init__(self, host, port, protocol, reqPat):
-            self.host = host
-            self.port = port
-            self.protocol = protocol
-            self.reqPat = reqPat
-            threading.Thread.__init__(self)
-        # при запуске экземпляра данного потока выполнится следующий блок
-        # который опросит проверяемые порты на сервере по соотв. протоколу
-        # а также получит и выведет ответ от портов
-        def run(self):
-            if self.protocol == "TCP":
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
-                    prtSock.settimeout(1)
+
+############################################################C L I E N T#################################################
+# Класс - поток. Экземплярами данного класса являются
+# клиентские сокеты, через которые проходит соединение с
+# проверяемыми портами на сервере
+class mySecondaryThread(threading.Thread):
+    def __init__(self, host, port, protocol):
+        self.host = host
+        self.port = port
+        self.protocol = protocol
+        self.reqPat = simpleRequest
+        threading.Thread.__init__(self)
+    # при запуске экземпляра данного потока выполнится следующий блок
+    # который опросит проверяемые порты на сервере по соотв. протоколу
+    # а также получит и выведет ответ от портов
+    def run(self):
+        if self.protocol == "TCP":
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
+                try:
+                    flag = "connection"
+                    prtSock.settimeout(2)
                     prtSock.connect((self.host, self.port))
+                    loggerCl.debug(f"Connection with {self.host} through TCP {self.port} was settled")
+                    clientReport["servers"][self.host, self.protocol, self.port] = {"connection": "OK"}
+                    flag = "sendall"
                     mySimpleRequest = self.reqPat.copy()
                     mySimpleRequest["protocol"] = self.protocol
                     mySimpleRequest["port"] = self.port
                     mySimpleRequest = json.dumps(mySimpleRequest)
+                    loggerCl.debug(f"simpleRequest for {self.host} TCP {self.port} was decoded in json string successfully")
                     prtSock.sendall(bytes(mySimpleRequest, encoding='utf-8'))
-                    rcv = prtSock.recv(1024).decode()
-                    print(rcv)
-            elif self.protocol == "UDP":
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
-                    prtSock.settimeout(1)
-                    prtSock.connect((self.host, self.port))
+                    loggerCl.debug(f"simpleRequest for {self.host} TCP {self.port} was sent successfully")
+                    clientReport["servers"][self.host, self.protocol, self.port]["sendall"] = "OK"
+                    flag = "recv"
+                    rcv = prtSock.recv(1024)
+                    loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was recieved successfully")
+                    clientReport["servers"][self.host, self.protocol, self.port]["recv"] = "OK"
+                    msg = rcv.decode()
+                    loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded successfully")
+                    pyMsg = json.loads(msg)
+                    loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded in python object successfully")
+                    if pyMsg["type"] == "simpleRespond":
+                        loggerCl.debug(f"simpleRespond from {self.host} TCP {self.port} was recieved successfully")
+                    else:
+                        loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved. Expected simpleRespond")
+                except (ConnectionError, socket.timeout):
+                    loggerCl.error(f"Timeout Error on {flag.upper()} operation with {self.host} TCP {self.port}")
+                    if flag == "connection":
+                        clientReport["servers"][self.host, self.protocol, self.port] = {"connection": "NOT OK"}
+                    elif flag == "sendall":
+                        clientReport["servers"][self.host, self.protocol, self.port]["sendall"] = "NOT OK"
+                    elif flag == "recv":
+                        clientReport["servers"][self.host, self.protocol, self.port]["recv"] = "NOT OK"
+                except json.JSONDecodeError:
+                    loggerCl.error(f"{flag.upper()} message {self.host} TCP {self.port} wasn\'t decoded in json string successfully")
+                except InterruptedError:
+                    loggerCl.error(f"{flag.upper()} operations with {self.host} TCP {self.port} was interrupted")
+                    if flag == "sendall":
+                        clientReport["servers"][self.host, self.protocol, self.port]["sendall"] = "NOT OK"
+                    elif flag == "recv":
+                        clientReport["servers"][self.host, self.protocol, self.port]["recv"] = "NOT OK"
+
+
+        elif self.protocol == "UDP":
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
+                try:
+                    prtSock.settimeout(2)
+                    flag = "sendto"
                     mySimpleRequest = simpleRequest.copy()
                     mySimpleRequest["protocol"] = self.protocol
                     mySimpleRequest["port"] = self.port
                     mySimpleRequest = json.dumps(mySimpleRequest)
+                    loggerCl.debug(f"simpleRequest for {self.host} UDP {self.port} was decoded in json string successfully")
                     prtSock.sendto(bytes(mySimpleRequest, encoding="utf-8"), (self.host, self.port))
-                    rcv = prtSock.recv(1024).decode()
-                    print(rcv)
+                    loggerCl.debug(f"simpleRequest for {self.host} UDP {self.port} was sent successfully")
+                    clientReport["servers"][self.host, self.protocol, self.port] = {"sendto": "OK"}
+                    flag = "recv"
+                    rcv = prtSock.recv(1024)
+                    loggerCl.debug(f"{flag.upper()} from {self.host} UDP {self.port} was recieved successfully")
+                    clientReport["servers"][self.host, self.protocol, self.port]["recv"] = "OK"
+                    msg = rcv.decode()
+                    loggerCl.debug(f"Message from {self.host} UDP {self.port} was decoded successfully")
+                    pyMsg = json.loads(msg)
+                    loggerCl.debug(f"Message from {self.host} UDP {self.port} was decoded in python object successfully")
+                    if pyMsg["type"] == "simpleRespond":
+                        loggerCl.debug(f"simpleRespond from {self.host} UDP {self.port} was recieved successfully")
+                    else:
+                        loggerCl.warning(f"Unknown message from {self.host} UDP {self.port} was recieved. Expected simpleRespond")
+                except socket.timeout:
+                    loggerCl.error(f"Timeout Error on {flag.upper()} operation with {self.host} UDP {self.port}")
+                except json.JSONDecodeError:
+                    loggerCl.warning(f"{flag.upper()} message {self.host} UDP {self.port} wasn\'t decoded in json string successfully")
+                except InterruptedError:
+                    loggerCl.warning(f"{flag.upper()} operations with {self.host} UDP {self.port} was interrupted")
+                    if flag == "sendto":
+                        clientReport["servers"][self.host, self.protocol, self.port] = {"sendto": "NOT OK"}
+                    if flag == "recv":
+                        clientReport["servers"][self.host, self.protocol, self.port]["recv"] = "NOT OK"
 
-    # Класс - поток. Экземплярами данного класса являются
-    # клиентские сокеты, через которые проходит соединение с сервером
-    # каждый сокет (порт) в отдельном потоке
-    class myThread(threading.Thread):
-        # передаем ip хоста (клиентской машины)
-        # порт на котором хотим организовать сокет
-        # и словарь портов, которые сервер должен будет поднять на своей стороне
-        def __init__(self, host, port, portCheck, portListPatt):
-            self.host = host
-            self.port = port
-            self.portCheck = portCheck
-            self.portListPatt = portListPatt
-            threading.Thread.__init__(self)
+# Класс - поток. Экземплярами данного класса являются
+# клиентские сокеты, через которые проходит соединение с сервером
+# каждый сокет (порт) в отдельном потоке
+class myThread(threading.Thread):
+    # передаем ip хоста (клиентской машины)
+    # порт на котором хотим организовать сокет
+    # и словарь портов, которые сервер должен будет поднять на своей стороне
+    def __init__(self, host, port, portCheck, portListPatt):
+        self.host = host
+        self.port = port
+        self.portCheck = portCheck
+        self.portListPatt = portListPatt
+        threading.Thread.__init__(self)
 
-        # Данная ф-ция описывает, что будет происходить при запуске потока (start())
-        def run(self):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
-            try:
-                sock.settimeout(1)                                              # сокращаем время на установление соединения с сервером
-                print("trying to connect", self.host)
-                sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
-                print("connected", self.host)
-            except:
-                mainCheckDic["status"] = "NOT OK"                               # Если не удалось установить соединение с сервером, то в список мы добавляем блокирующее значение, которое говорит, что можно закругляться
-                mainCheckDic[self.host] = "DOWN"
-                print(self.host, "HAVA SOME PROBLEMS")
-                #sock.close()
-                return 0                                                        # Выходим из ф-ции тем самым прерывая поток
-            else:
-                sock.sendall(bytes(mainRequest, encoding='utf-8'))              # Если соединение установлено, нужно отправить запрос на подтверждение установки соединения
-                rcv = sock.recv(1024).decode()                                  # Получаем ответ на запрос, что подверждает, что соединение по 3242 установлено
+    # Данная ф-ция описывает, что будет происходить при запуске потока (start())
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
+        try:
+            flag = "main connection"
+            sock.settimeout(2)                                              # сокращаем время на установление соединения с сервером
+            sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
+            loggerCl.debug(f"Connection with {self.host} TCP {self.port} was settled successfully")
+            flag = "sendall mainRequest"
+            sock.sendall(bytes(mainRequest, encoding='utf-8'))              # Если соединение установлено, нужно отправить запрос на подтверждение установки соединения
+            loggerCl.debug(f"mainRequest to {self.host} TCP {self.port} was sent successfully")
+            flag = "recv msg1"
+            rcv = sock.recv(1024)                                 # Получаем ответ на запрос, что подверждает, что соединение по 3242 установлено
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was recieved successfully")
+            msg = rcv.decode()
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded successfully")
+            pyMsg = json.loads(msg)
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python object successfully")
+            if pyMsg["type"] == "mainRespond":
                 mainCheckDic[self.host] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
-                print(rcv)
+                loggerCl.debug(f"mainRespond from {self.host} TCP {self.port} was recieved successfully")
+            else:
+                mainCheckDic[self.host] = "UP-"
+                loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved successfully. Expected mainRespond.")
 
             # проверяем список, всех ли мы опросили и все ли порты доступны
             # если нет, то говорим, что на каком-то порту проблемы и завершаем процесс
             while True:
                 if len(mainCheckDic) == len(serverDic)+1:
                     if mainCheckDic["status"] == "NOT OK":
-                        print("SOME SERVER IS NOT UP")
+                        loggerCl.error(f"Not all servers are working on TCP {self.port}")
                         print(mainCheckDic)
-                        return                                                  # Завершаем ф-цию и поток вместе с ней
+                        return
                     else:
-                        print("ALL SERVERS ARE UP")
+                        loggerCl.info(f"All servers are UP on TCP {self.port}")
                         print(mainCheckDic)
                         break
 
             # формируем список портов, которые сервер должен будет поднять на своей стороне
             portList = self.portListPatt.copy()
             portList["ports"] = self.portCheck
+
+            flag = "sendall portList"
             portList = json.dumps(portList)
-            print(portList)
-            sock.sendall(bytes(portList, encoding="utf-8"))                     # отправляем список
-            recv = sock.recv(1024).decode()                                     # получили подверждение, что список был получен
-            print(recv)
-            recv = sock.recv(1024).decode()                                     # получили подтверждение того, что все порты подняты и готовы к дальнейшему опросу
-            print(recv)
+            loggerCl.debug(f"portList message to {self.host} TCP 3242 was decoded into json format successfully")
+            sock.sendall(bytes(portList, encoding="utf-8"))
+            loggerCl.debug(f"{flag.upper()} operations with {self.host} TCP {self.port} was successfull")
+            flag = "recv msg2"
+            rcv = sock.recv(1024)
+            loggerCl.debug(f"{flag.upper()} operations with {self.host} TCP {self.port} was successfull")
+            msg = rcv.decode()
+            loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded successfully")
+            pyMsg = json.loads(msg)
+            loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded in json formta successfully")
+            if pyMsg["type"] == "portListRespond":
+                loggerCl.debug(f"portListRespond from {self.host} TCP 3242 was recieved successfully")
+            else:
+                loggerCl.warning(f"damaged portListRespond from {self.host} TCP 3242 was recieved successfully")
+            flag = "recv msg3"
+            rcv = sock.recv(1024)
+            loggerCl.debug(f"{flag.upper()} operations with {self.host} TCP {self.port} was successfull")
+            msg = rcv.decode()
+            loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded successfully")
+            pyMsg = json.loads(msg)
+            loggerCl.debug(f"{flag.upper()} from {self.host} TCP {self.port} was decoded in json formta successfully")
+            if pyMsg["type"] == "activePortListRespond":
+                loggerCl.debug(f"activePortListRespond from {self.host} TCP 3242 was recieved successfully")
+                if pyMsg["message"] == "NOT OK":
+                    loggerCl.error(f"not all ports on {self.host} are up")
+                    return
+            else:
+                loggerCl.warning(f"damaged activePortListRespond from {self.host} TCP 3242 was recieved successfully")
+
 
             # получив подтверждение, начинаем опрашивать поочередно наши порты
             # с помощью with открываем соединение, ЗАПРОС - ОТВЕТ, закрываем соединение
             for protocol, ports in self.portCheck.items():
                 for port in ports:
-                    portThread = mySecondaryThread(self.host, port, protocol, simpleRequest)
+                    portThread = mySecondaryThread(self.host, port, protocol)
                     portThread.start()
 
             time.sleep(3)
+            flag = "sendall reportRequest"
             sock.sendall(bytes(reportRequest, encoding="utf-8"))
-            rcv = sock.recv(1024).decode()
-            print(rcv)
+            loggerCl.debug(f"reportRequest to {self.host} TCP {self.port} was sent successfully")
+            rcv = sock.recv(1024)
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was recieved successfully")
+            msg = rcv.decode()
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded successfully")
+            pyMsg = json.loads(msg)
+            loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python obj successfully")
+            if pyMsg["type"] == "reportRespond":
+                print(pyMsg)
+                loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python obj successfully")
+            else:
+                loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved successfully. Expected reportRespond")
 
-    # Создаем потоки, в вкоторых будет происходить проверка порта 3242
-    # и дальнейшая проверка других портов, если все сервера доступны на 3242
-    for srv in serverDic:
-        thread = myThread(srv["host"], 3242, srv["ports"], portList)
-        checkList.append(thread)
-        thread.start()
-        print("THREAD GO GO GO GO")
+        except (ConnectionError, socket.timeout):
+            if flag == "main connection":
+                loggerCl.error(f"Connection with {self.host} TCP {self.port} wasn\'t settled")
+            else:
+                loggerCl.error(f"Connection problems {self.host} TCP {self.port} while {flag.upper()} operation")
+            mainCheckDic["status"] = "NOT OK"
+            mainCheckDic[self.host] = "DOWN"
+            return
+        except json.JSONDecodeError:
+            loggerCl.warning(f"{flag.upper()} message {self.host} TCP {self.port} wasn\'t decoded in json string successfully")
+            return
+        except UnicodeDecodeError:
+            loggerCl.warning(f"{flag.upper()} message {self.host} TCP {self.port} wasn\'t decoded successfully")
+            return
+        except InterruptedError:
+            loggerCl.warning(f"{flag.upper()} operations with {self.host} TCP {self.port} was interrupted")
+            mainCheckDic["status"] = "NOT OK"
+            mainCheckDic[self.host] = "DOWN"
+            return
 
-    print(checkList)            # список потоков в которыъ проверяются все сервера = колич-во серверов в json файле
 
-    # Проверка завершения всех вызванных потоков
-    for srv in checkList:
-        print(srv.getName())
-        print(srv.isAlive())
-        if srv.isAlive():
-            srv.join()
-            print('STOPPED')
-        else:
-            print("ALREADY STOPPED")
+############################################################S E R V E R#################################################
 
-    print("FIN")
-
-def server():
-    # Handler для обработки соедниений на порту 3242
-    class MyTCPRequestHandler(socketserver.StreamRequestHandler):
-        def handle(self):
-            # Чтобы не разрывать соединение мы будем проверять получаемые сообщение в цикле,
-            # выйдем из цикла и разорвем соединение по окончанию работы с клиентом
-            logger.debug(f"TCP connection on 3242 with {self.client_address[0]} was established")
-            while True:
-                try:
-                    rcv = self.request.recv(1024)           # получили сообщение
-                    if not rcv:
-                        logger.debug(f"TCP connection on port 3242 with {self.client_address[0]} was completed")
-                        break
-                except:
-                    logger.warning(f"TCP on port 3242 connection with {self.client_address[0]} was broken while recieving a message")
-                    break
-                logger.debug(f"message from {self.client_address[0]} was recieved")
-
-                try:
-                    msg = rcv.decode()                    # декодировали сообщение из b в str
-                    logger.debug(f"message from {self.client_address[0]} was decoded successfuly")
-                    pyMsg = json.loads(msg)                 # преобразовали json строку в объект python
-
-                    if pyMsg["type"] == "mainRequest":
-                        logger.debug(f"mainRequest message was recieved from {self.client_address[0]}")
-                        self.request.sendall(bytes(mainRespond, encoding='utf-8'))
-                        logger.debug(f"mainRespond was sent to {self.client_address[0]}")
-
-                    elif pyMsg["type"] == "reportRequest":
-                        logger.debug(f"reportRequest message was recieved from {self.client_address[0]}")
-                        myReportRespond = json.dumps(reportRespond)
-                        self.request.sendall(bytes(myReportRespond, encoding='utf-8'))
-                        logger.debug(f"reportRespond was sent to {self.client_address[0]}")
-
-                    elif pyMsg["type"] == "portList":
-                        logger.debug(f"portList message was recieved from {self.client_address[0]}")
-                        self.request.sendall(bytes(portListRespond, encoding='utf-8'))
-                        logger.debug(f"portListRespond was sent to {self.client_address[0]}")
-
-                        # Проходим по словарю портов, которые необходимо поднять для проверки
-                        for prt, number in pyMsg["ports"].items():
-                            for n in number:
-                                # создаем и запускаем сервер на каждом из портов в отедьном потоке, если такого сервера еще нет
-                                if (n, prt) in portThreadDic.keys():
-                                    logger.debug(f"{prt} server on {n} is already launched")
-                                else:
-                                    portThread = launchedPort(hostAddress, n, prt)
-                                    portThreadDic[n, prt] = portThread
-                                    portThread.start()
-                                    logger.debug(f"{prt} on port {n} serve_forever is launched")
-
-                        # ОТВЕТ о запуске всех портов (готов к проверке)
-                        self.request.sendall(bytes(activePortListRespond, encoding='utf-8')) # нужна ли проверка ?
-                        #break
-
-                except UnicodeDecodeError:
-                    logger.warning(f"message from {self.client_address[0]} wasn't decoded")
-                    break
-                except json.decoder.JSONDecodeError:
-                    logger.warning(f"message form {self.client_address[0]} wasn't decoded from json format")
-                    break
-                except InterruptedError:
-                    logger.warning(f"failed to send respond to {self.client_address[0]} {pyMsg['type']}")
-                    break
-
-    # Класс - поток проверяемого порта. Экземплярами данного класаа являются
-    # сервера TCP UDP поднятые на провереяемых портах
-    class launchedPort(threading.Thread):
-        # передаем ip адресс нашего сервера (на котором заупстим сервер)
-        # порт (для которого запустим сервер)
-        # протокол транспортного уровня, по которому будет работать сервер (TCP или UDP)
-        def __init__(self, host, port, protocol):
-            self.host = hostAddress
-            self.port = port
-            self.protocol = protocol
-            threading.Thread.__init__(self)
-            self.setDaemon(True)
+# Handler для обработки соедниений на порту 3242
+class MyTCPRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        # Чтобы не разрывать соединение мы будем проверять получаемые сообщение в цикле,
+        # выйдем из цикла и разорвем соединение по окончанию работы с клиентом
+        loggerS.debug(f"TCP connection on 3242 with {self.client_address[0]} was established")
+        while True:
             try:
-                if self.protocol == "TCP":
-                    self.server = socketserver.TCPServer((self.host, self.port), mySecondaryTCPRequestHandler)
-                    logger.debug(f"{self.host} TCP {self.port} SocketServer was created")
-                elif self.protocol == "UDP":
-                    self.server = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
-                    logger.debug(f"{self.host} UDP {self.port} SocketServer was created")
-            except:
-                logger.debug(f"{self.host} {self.protocol} {self.port} SocketServer wasn\'t created")
-
-        # Данная ф-ция описывает действия потока при его запуске (start())
-        def run(self):
-            try:
-                reportRespond["ports"]["protocol"][self.protocol][self.port] = "UP"
-                self.server.serve_forever()
-            except:
-                logger.error(f"{self.protocol} on port {self.port} serve_forever error ")
-
-        def stop_server(self):
-            try:
-                self.server.shutdown()
-                self.server.server_close()
-                logger.debug(f"{self.protocol} server on {self.port} port was closed")
-            except:
-                logger.warning("f{self.protocol} server on {self.port} port couldn\'t be closed correctly")
-
-
-    class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            #print('Args:', dir(args[0]))
-            #print('Args:', args[0].getsockname())
-            #print('kwargs:', kwargs)
-            #self.host = self.request.getsockname()[0]
-            #self.port = self.request.getsockname()[1]
-
-        def handle(self):
-            try:
+                flag = "recv"
                 rcv = self.request.recv(1024)
-                logger.debug(f"simpleRequest from {self.client_address[0]} was recieved on TCP {self.request.getsockname()[1]}")
+                loggerS.debug(f"{flag.upper()} from {self.client_address[0]} was successfull")
+                if not rcv:
+                    loggerS.debug(f"TCP connection on port 3242 with {self.client_address[0]} was completed")
+                    break
                 msg = rcv.decode()
-                logger.debug(f"simpleRequest from {self.client_address[0]} was decoded on TCP {self.request.getsockname()[1]}")
+                loggerS.debug(f"message from {self.client_address[0]} was decoded successfuly")
                 pyMsg = json.loads(msg)
-                logger.debug(f"simpleRequest from {self.client_address[0]} was decoded in json format on TCP {self.request.getsockname()[1]}")
-                mySimpleRespond = simpleRespond.copy()
-                mySimpleRespond["protocol"] = pyMsg["protocol"]
-                mySimpleRespond["port"] = pyMsg["port"]
-                mySimpleRespond = json.dumps(mySimpleRespond)
-                self.request.sendall(bytes(mySimpleRespond, encoding='utf-8'))
-                logger.debug(f"simpleRespond was sent to {self.client_address[0]} from TCP {self.request.getsockname()[1]}")
+
+                if pyMsg["type"] == "mainRequest":
+                    loggerS.debug(f"mainRequest message was recieved from {self.client_address[0]}")
+                    flag = "sendall mainResp"
+                    self.request.sendall(bytes(mainRespond, encoding='utf-8'))
+                    loggerS.debug(f"mainRespond was sent to {self.client_address[0]}")
+                    continue
+
+                elif pyMsg["type"] == "reportRequest":
+                    loggerS.debug(f"reportRequest message was recieved from {self.client_address[0]}")
+                    myReportRespond = json.dumps(reportRespond)
+                    flag = "sendall repResp"
+                    self.request.sendall(bytes(myReportRespond, encoding='utf-8'))
+                    loggerS.debug(f"reportRespond was sent to {self.client_address[0]}")
+                    continue
+
+                elif pyMsg["type"] == "portList":
+                    loggerS.debug(f"portList message was recieved from {self.client_address[0]}")
+                    flag = "sendall portListResp"
+                    self.request.sendall(bytes(portListRespond, encoding='utf-8'))
+                    loggerS.debug(f"portListRespond was sent to {self.client_address[0]}")
+                else:
+                    break
+
+                myActivePortListRespond = activePortListRespond.copy()
+                # Проходим по словарю портов, которые необходимо поднять для проверки
+                for protocol, ports in pyMsg["ports"].items():
+                    for port in ports:
+                        # создаем и запускаем сервер на каждом из портов в отедьном потоке, если такого сервера еще нет
+                        if (port, protocol) in portThreadDic.keys():
+                            loggerS.debug(f"{protocol} server on {port} is already launched")
+                        else:
+                            portThread = launchedPort(hostAddress, port, protocol)
+                            portThread.start()
+                            if portThread.isAlive():
+                                portThreadDic[port, protocol] = portThread
+
+                # ОТВЕТ о запуске всех портов (готов к проверке)
+                flag = "sendall activePortList"
+                myActivePortListRespond = json.dumps(myActivePortListRespond)
+                self.request.sendall(bytes(myActivePortListRespond, encoding='utf-8'))
+                loggerS.debug(f"activePortListRespond to {self.client_address[0]} TCP 3242 was successfull")
+
+            except ConnectionError:
+                if flag == "recv":
+                    loggerS.error(f"TCP on port 3242 connection with {self.client_address[0]} was broken while recieving a message")
+                else:
+                    loggerS.error(f"{flag.upper()} operation {self.client_address[0]} {pyMsg['type']} was interrupted")
+                break
             except UnicodeDecodeError:
-                logger.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on TCP {self.request.getsockname()[1]}")
+                loggerS.error(f"{flag.upper()} from {self.client_address[0]} wasn't decoded")
+                break
             except json.decoder.JSONDecodeError:
-                logger.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on TCP {self.request.getsockname()[1]}")
+                loggerS.error(f"{flag.upper()} from {self.client_address[0]} wasn't decoded from json format")
+                break
             except InterruptedError:
-                logger.exception(f"failed to send\/recieve message to\/from {self.client_address[0]} on TCP {self.request.getsockname()[1]}")
+                loggerS.error(f"{flag.upper()} operation {self.client_address[0]} {pyMsg['type']} was interrupted")
+                break
 
-    class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.host = self.socket.getsockname()[0]
-            self.port = self.socket.getsockname()[1]
 
-        def handle(self):
-            try:
-                rcv = self.request[0]
-                logger.debug(f"simpleRequest from {self.client_address[0]} was recieved on UDP {self.socket.getsockname()[1]}")
-                msg = rcv.decode()
-                logger.debug(f"simpleRequest from {self.client_address[0]} was decoded on UDP {self.socket.getsockname()[1]}")
-                socket = self.request[1]
-                pyMsg = json.loads(msg)
-                mySimpleRespond = simpleRespond.copy()
-                mySimpleRespond["protocol"] = pyMsg["protocol"]
-                mySimpleRespond["port"] = pyMsg["port"]
-                mySimpleRespond = json.dumps(mySimpleRespond)
-                socket.sendto(bytes(mySimpleRespond, encoding='utf-8'), self.client_address)
-                logger.debug(f"simpleRespond was sent to {self.client_address[0]} from UDP {self.socket.getsockname()[1]}")
-            except UnicodeDecodeError:
-                logger.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on UDP {self.socket.getsockname()[1]}")
-            except json.decoder.JSONDecodeError:
-                logger.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on UDP {self.socket.getsockname()[1]}")
-            except InterruptedError:
-                logger.exception(f"failed to send\/recieve message to\/from {self.client_address[0]} on UDP {self.socket.getsockname()[1]}")
-
-    class main_thread(threading.Thread):
-        def __init__(self, addr, port):
-            self.addr = addr
-            self.port = port
-            threading.Thread.__init__(self)
-            try:
-                self.server = socketserver.TCPServer((self.addr, port), MyTCPRequestHandler)
-                logger.debug(f"{self.addr} 'TCP' {self.port} SocketServer was created")
-            except:
-                logger.warning(f"{self.addr} 'TCP' {self.port} SocketServer wasn\'t created")
-        def run(self):
-            try:
-                self.server.serve_forever()
-            except:
-                logger.error(f"SocketServer on port {self.port} serve_forever error ")
-        def stop_server(self):
-            try:
-                self.server.shutdown()
-                self.server.server_close()
-                logger.debug(f"SocketServer on {self.port} port was closed")
-            except:
-                logger.warning(f"SocketServer on {self.port} port couldn\'t be closed correctly")
-
-    mainThread = main_thread(hostAddress, 3242)
-    mainThread.start()
-
-    while True:
+# Класс - поток проверяемого порта. Экземплярами данного класаа являются
+# сервера TCP UDP поднятые на провереяемых портах
+class launchedPort(threading.Thread):
+    # передаем ip адресс нашего сервера (на котором заупстим сервер)
+    # порт (для которого запустим сервер)
+    # протокол транспортного уровня, по которому будет работать сервер (TCP или UDP)
+    def __init__(self, host, port, protocol):
+        self.host = hostAddress
+        self.port = port
+        self.protocol = protocol
+        threading.Thread.__init__(self)
+        self.setDaemon(True)
         try:
-            print(threading.activeCount(), "ACTIVE THREADS")
-            print(portThreadDic)
-            time.sleep(60)
-            #print(serverDic)
-        except KeyboardInterrupt:
-            mainThread.stop_server()
-            break
+            if self.protocol == "TCP":
+                self.server = socketserver.TCPServer((self.host, self.port), mySecondaryTCPRequestHandler)
+                loggerS.debug(f"{self.host} TCP {self.port} SocketServer was created")
+                reportRespond["ports"]["protocol"][self.protocol][self.port] = {"sockServ creation": "OK"}
+            elif self.protocol == "UDP":
+                self.server = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
+                loggerS.debug(f"{self.host} UDP {self.port} SocketServer was created")
+        except:
+            loggerS.error(f"couldn\'t create SocketServer on {self.protocol} {self.port}")
+            reportRespond["ports"]["protocol"][self.protocol][self.port] = {"sockServ creation": "NOT OK"}
 
-        # for i in serverDic.values():
-        #     i.shutdown()
-        #     i.server_close()                # вызывается для очистки сервера (сокета, если конкретнее) (self.socket.close())
-        #     print("DOOOWN B**CH")
-        # serverDic = {}
-        # print("I\'M CLEAN AND READY FOR WORK")
+    # Данная ф-ция описывает действия потока при его запуске (start())
+    def run(self):
+        try:
+            reportRespond["ports"]["protocol"][self.protocol][self.port]["serve_forever"] = "OK"
+            self.server.serve_forever()
+        except:
+            reportRespond["ports"]["protocol"][self.protocol][self.port]["serve_forever"] = "NOT OK"
 
-# Считывание json файла со списком серверов
-# запускаем приложение в 1-ом из режимов
-if sys.argv[1] == 'client':
-    serverListFileName = sys.argv[2]
-    with open(serverListFileName, 'r') as f_r:
-        serverDic = json.load(f_r)
-    client()
-elif sys.argv[1] == 'server':
-    server()
+    def stop_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        loggerS.debug(f"{self.protocol} server on {self.port} port was closed")
+
+
+class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
+    '''def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #print('Args:', dir(args[0]))
+        #print('Args:', args[0].getsockname())
+        #print('kwargs:', kwargs)
+        #self.host = self.request.getsockname()[0]
+        #self.port = self.request.getsockname()[1]'''
+    def handle(self):
+        try:
+            rcv = self.request.recv(1024)
+            loggerS.debug(f"simpleRequest from {self.client_address[0]} was recieved on TCP {self.request.getsockname()[1]}")
+            msg = rcv.decode()
+            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded on TCP {self.request.getsockname()[1]}")
+            pyMsg = json.loads(msg)
+            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded in json format on TCP {self.request.getsockname()[1]}")
+            mySimpleRespond = simpleRespond.copy()
+            mySimpleRespond["protocol"] = pyMsg["protocol"]
+            mySimpleRespond["port"] = pyMsg["port"]
+            mySimpleRespond = json.dumps(mySimpleRespond)
+            self.request.sendall(bytes(mySimpleRespond, encoding='utf-8'))
+            loggerS.debug(f"simpleRespond was sent to {self.client_address[0]} from TCP {self.request.getsockname()[1]}")
+        except UnicodeDecodeError:
+            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on TCP {self.request.getsockname()[1]}")
+        except json.decoder.JSONDecodeError:
+            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on TCP {self.request.getsockname()[1]}")
+        except InterruptedError:
+            loggerS.exception(f"failed to send/recieve message to/from {self.client_address[0]} on TCP {self.request.getsockname()[1]}")
+
+class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
+    '''def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.host = self.socket.getsockname()[0]
+        self.port = self.socket.getsockname()[1]'''
+    def handle(self):
+        try:
+            rcv = self.request[0]
+            loggerS.debug(f"simpleRequest from {self.client_address[0]} was recieved on UDP {self.socket.getsockname()[1]}")
+            msg = rcv.decode()
+            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded on UDP {self.socket.getsockname()[1]}")
+            socket = self.request[1]
+            pyMsg = json.loads(msg)
+            mySimpleRespond = simpleRespond.copy()
+            mySimpleRespond["protocol"] = pyMsg["protocol"]
+            mySimpleRespond["port"] = pyMsg["port"]
+            mySimpleRespond = json.dumps(mySimpleRespond)
+            socket.sendto(bytes(mySimpleRespond, encoding='utf-8'), self.client_address)
+            loggerS.debug(f"simpleRespond was sent to {self.client_address[0]} from UDP {self.socket.getsockname()[1]}")
+        except UnicodeDecodeError:
+            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on UDP {self.socket.getsockname()[1]}")
+        except json.decoder.JSONDecodeError:
+            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on UDP {self.socket.getsockname()[1]}")
+        except InterruptedError:
+            loggerS.exception(f"failed to send/recieve message to/from {self.client_address[0]} on UDP {self.socket.getsockname()[1]}")
+
+
+class main_thread(threading.Thread):
+
+    def __init__(self, addr, port):
+        self.addr = addr
+        self.port = port
+        threading.Thread.__init__(self)
+        try:
+            self.server = socketserver.TCPServer((self.addr, port), MyTCPRequestHandler)
+            loggerS.debug(f"{self.addr} 'TCP' {self.port} SocketServer was created")
+        except:
+            loggerS.warning(f"{self.addr} 'TCP' {self.port} SocketServer wasn\'t created")
+
+    def run(self):
+        try:
+            self.server.serve_forever()
+        except:
+            loggerS.error(f"SocketServer on port {self.port} serve_forever error ")
+
+    def stop_server(self):
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+            loggerS.debug(f"SocketServer on {self.port} port was closed")
+        except:
+            loggerS.warning(f"SocketServer on {self.port} port couldn\'t be closed correctly")
+
+
+# Блок отвечаюищй за запуск программы в выбранном режиме (client/server)
+if __name__ == "__main__":
+    if sys.argv[1] == 'client':
+        serverListFileName = sys.argv[2]
+        try:
+            with open(serverListFileName, 'r') as f_r:
+                serverDic = json.load(f_r)
+                # Создаем потоки, в вкоторых будет происходить проверка порта 3242
+                # и дальнейшая проверка других портов, если все сервера доступны на 3242
+                for srv in serverDic:
+                    thread = myThread(srv["host"], 3242, srv["ports"], portList)
+                    checkList.append(thread)
+                    thread.start()
+
+                # Проверка завершения всех вызванных потоков
+                for srv in checkList:
+                    print(srv.getName())
+                    print(srv.isAlive())
+                    if srv.isAlive():
+                        srv.join()
+                        print('STOPPED')
+                    else:
+                        print("ALREADY STOPPED")
+
+        except:
+            print("File with servers formed uncorrectly. Check the syntaxis or choose another file.")
+
+        print("FIN")
+        print(clientReport)
+
+    elif sys.argv[1] == "server":
+        mainThread = main_thread(hostAddress, 3242)
+        mainThread.start()
+
+        while True:
+            try:
+                if not mainThread.isAlive():
+                    print("Server can\'t be launched.\nCheck TCP 3242 port.")
+                    break
+                else:
+                    print(threading.activeCount(), "ACTIVE THREADS")
+                    print(portThreadDic)
+                    time.sleep(60)
+                    #print(serverDic)
+            except KeyboardInterrupt:
+                mainThread.stop_server()
+                print("Server was stopped")
+                break
+
+            # for i in serverDic.values():
+            #     i.shutdown()
+            #     i.server_close()                # вызывается для очистки сервера (сокета, если конкретнее) (self.socket.close())
+            #     print("DOOOWN B**CH")
+            # serverDic = {}
+            # print("I\'M CLEAN AND READY FOR WORK")
+    else:
+        print("Incorrect arguments were given")
