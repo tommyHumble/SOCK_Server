@@ -84,7 +84,7 @@ activePortListRespond = {
 
 # запрос на проверку порта по TCP или UDP
 simpleRequest = {
-  "type": "request",
+  "type": "simpleRequest",
   "command": "check",
   "message": "PORT STATUS",
   "client": hostAddress,
@@ -116,7 +116,7 @@ reportRequest = json.dumps(reportRequest)
 reportRespond = {
   "type": "reportRespond",
   "message": "REPORT",
-  "server": hostAddress,
+  "servers": hostAddress,
   "ports": {
     "protocol": {
       "UDP": {},
@@ -433,6 +433,8 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                             portThread.start()
                             if portThread.isAlive():
                                 portThreadDic[port, protocol] = portThread
+                            else:
+                                myActivePortListRespond["message"] = "NOT OK"
 
                 # ОТВЕТ о запуске всех портов (готов к проверке)
                 flag = "sendall activePortList"
@@ -450,7 +452,7 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                 loggerS.error(f"{flag.upper()} from {self.client_address[0]} wasn't decoded")
                 break
             except json.decoder.JSONDecodeError:
-                loggerS.error(f"{flag.upper()} from {self.client_address[0]} wasn't decoded from json format")
+                loggerS.error(f"{flag.upper()} from {self.client_address[0]} wasn't decoded from json string")
                 break
             except InterruptedError:
                 loggerS.error(f"{flag.upper()} operation {self.client_address[0]} {pyMsg['type']} was interrupted")
@@ -477,6 +479,7 @@ class launchedPort(threading.Thread):
             elif self.protocol == "UDP":
                 self.server = socketserver.UDPServer((self.host, self.port), mySecondaryUDPRequestHandler)
                 loggerS.debug(f"{self.host} UDP {self.port} SocketServer was created")
+                reportRespond["ports"]["protocol"][self.protocol][self.port] = {"sockServ creation": "OK"}
         except:
             loggerS.error(f"couldn\'t create SocketServer on {self.protocol} {self.port}")
             reportRespond["ports"]["protocol"][self.protocol][self.port] = {"sockServ creation": "NOT OK"}
@@ -505,24 +508,38 @@ class mySecondaryTCPRequestHandler(socketserver.StreamRequestHandler):
         #self.port = self.request.getsockname()[1]'''
     def handle(self):
         try:
+            flag = "recv"
             rcv = self.request.recv(1024)
-            loggerS.debug(f"simpleRequest from {self.client_address[0]} was recieved on TCP {self.request.getsockname()[1]}")
+            reportRespond["ports"]["protocol"]["TCP"][self.request.getsockname()[1]]["recv"] = "OK"
+            loggerS.debug(f"{flag.upper()} operation {self.client_address[0]} TCP {self.request.getsockname()[1]} was successful")
             msg = rcv.decode()
-            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded on TCP {self.request.getsockname()[1]}")
+            loggerS.debug(f"message from {self.client_address[0]} TCP {self.request.getsockname()[1]} was decoded successfully")
             pyMsg = json.loads(msg)
-            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded in json format on TCP {self.request.getsockname()[1]}")
+            loggerS.debug(f"message from {self.client_address[0]} TCP {self.request.getsockname()[1]} was decoded in python object format successfully")
+            if pyMsg["type"] == "simpleRequest":
+                loggerS.debug(f"simpleRequest from {self.client_address[0]} TCP {self.request.getsockname()[1]} was recieved successfully")
+            else:
+                loggerS.warning(f"Unknwon message from {self.client_address[0]} TCP {self.request.getsockname()[1]} was recieved successfully. Expected simpleRequest")
+
             mySimpleRespond = simpleRespond.copy()
+            flag = "sendall"
             mySimpleRespond["protocol"] = pyMsg["protocol"]
             mySimpleRespond["port"] = pyMsg["port"]
             mySimpleRespond = json.dumps(mySimpleRespond)
+            loggerS.debug(f"simpleRespond {self.client_address[0]} TCP {self.request.getsockname()[1]} was decoded in json string successfully")
             self.request.sendall(bytes(mySimpleRespond, encoding='utf-8'))
+            reportRespond["ports"]["protocol"]["TCP"][self.request.getsockname()[1]]["sendall"] = "OK"
             loggerS.debug(f"simpleRespond was sent to {self.client_address[0]} from TCP {self.request.getsockname()[1]}")
         except UnicodeDecodeError:
-            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on TCP {self.request.getsockname()[1]}")
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} TCP {self.request.getsockname()[1]} message wasn\'t decoded")
         except json.decoder.JSONDecodeError:
-            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on TCP {self.request.getsockname()[1]}")
-        except InterruptedError:
-            loggerS.exception(f"failed to send/recieve message to/from {self.client_address[0]} on TCP {self.request.getsockname()[1]}")
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} TCP {self.request.getsockname()[1]} message wasn\'t decoded in other format")
+        except (ConnectionError, InterruptedError):
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} TCP {self.request.getsockname()[1]} connection was lost")
+            if flag == "sendall":
+                reportRespond["ports"]["protocol"]["TCP"][self.request.getsockname()[1]]["sendall"] = "NOT OK"
+            elif flag == "recv":
+                reportRespond["ports"]["protocol"]["TCP"][self.request.getsockname()[1]]["recv"] = "NOT OK"
 
 class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
     '''def __init__(self, *args, **kwargs):
@@ -531,25 +548,39 @@ class mySecondaryUDPRequestHandler(socketserver.DatagramRequestHandler):
         self.port = self.socket.getsockname()[1]'''
     def handle(self):
         try:
+            flag = "recv"
             rcv = self.request[0]
-            loggerS.debug(f"simpleRequest from {self.client_address[0]} was recieved on UDP {self.socket.getsockname()[1]}")
+            loggerS.debug(f"message from {self.client_address[0]} UDP {self.socket.getsockname()[1]} was recieved successfully")
+            reportRespond["ports"]["protocol"]["UDP"][self.socket.getsockname()[1]]["recv"] = "OK"
             msg = rcv.decode()
-            loggerS.debug(f"simpleRequest from {self.client_address[0]} was decoded on UDP {self.socket.getsockname()[1]}")
+            loggerS.debug(f"message from {self.client_address[0]} UDP {self.socket.getsockname()[1]} was decoded successfully")
             socket = self.request[1]
             pyMsg = json.loads(msg)
+            loggerS.debug(f"message from {self.client_address[0]} UDP {self.socket.getsockname()[1]} was decoded in python object successfully")
+            if pyMsg["type"] == "simpleRequest":
+                loggerS.debug(f"simpleRequest from {self.client_address[0]} UDP {self.socket.getsockname()[1]} was recieved successfully")
+            else:
+                loggerS.warning(f"Unknwon message from {self.client_address[0]} UDP {self.socket.getsockname()[1]} was recieved successfully. Expected simpleRequest")
+
+            flag = "sendto"
             mySimpleRespond = simpleRespond.copy()
             mySimpleRespond["protocol"] = pyMsg["protocol"]
             mySimpleRespond["port"] = pyMsg["port"]
             mySimpleRespond = json.dumps(mySimpleRespond)
+            loggerS.debug(f"simpleRespond {self.client_address[0]} UDP {self.socket.getsockname()[1]} was decoded in json string successfully")
             socket.sendto(bytes(mySimpleRespond, encoding='utf-8'), self.client_address)
             loggerS.debug(f"simpleRespond was sent to {self.client_address[0]} from UDP {self.socket.getsockname()[1]}")
+            reportRespond["ports"]["protocol"]["UDP"][self.socket.getsockname()[1]]["sendto"] = "OK"
         except UnicodeDecodeError:
-            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded on UDP {self.socket.getsockname()[1]}")
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} UDP {self.socket.getsockname()[1]} message wasn\'t decoded")
         except json.decoder.JSONDecodeError:
-            loggerS.warning(f"simpleRequest from {self.client_address[0]} wasn\'t decoded from json format on UDP {self.socket.getsockname()[1]}")
-        except InterruptedError:
-            loggerS.exception(f"failed to send/recieve message to/from {self.client_address[0]} on UDP {self.socket.getsockname()[1]}")
-
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} UDP {self.socket.getsockname()[1]} message wasn\'t decoded in other format")
+        except (ConnectionError, InterruptedError):
+            loggerS.error(f"while {flag.upper()} operation {self.client_address[0]} UDP {self.socket.getsockname()[1]} connection was lost")
+            if flag == "sendto":
+                reportRespond["ports"]["protocol"]["UDP"][self.socket.getsockname()[1]]["sendall"] = "NOT OK"
+            elif flag == "recv":
+                reportRespond["ports"]["protocol"]["UDP"][self.socket.getsockname()[1]]["recv"] = "NOT OK"
 
 class main_thread(threading.Thread):
 
