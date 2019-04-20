@@ -38,7 +38,7 @@ fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(me
 fileHandler.setFormatter(fileFormatter)
 loggerCl.addHandler(fileHandler)
 
-# Отчет со стороны клиента
+# Отчет со стороны клиента (client)
 clientReport = {
   "type": "clientReport",
   "client": hostAddress,
