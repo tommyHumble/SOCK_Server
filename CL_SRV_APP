@@ -39,12 +39,7 @@ fileHandler.setFormatter(fileFormatter)
 loggerCl.addHandler(fileHandler)
 
 # Отчет со стороны клиента (client)
-clientReport = {
-  "type": "clientReport",
-  "client": hostAddress,
-  "report": {
-  }
-}
+clientReports = {}
 
 # Список экземпляров потоков серверов запущенных на портах {(8080, "UDP"): Thread Obj, ...}  (server)
 portThreadDic = {}
@@ -63,6 +58,13 @@ mainCheckDic = {"status": "OK"}
 
 # Словарь всех отчетов, которые клиент получил от серверов по 3242 (client)
 serversReports = {}
+
+# ф-ция для вычисления количества портов, которые необходимо проверить
+def dic_len(dic):
+    ln = 0
+    for el in dic.values():
+        ln += len(el)
+    return ln
 
 ############################################################C L I E N T#################################################
 # Класс - поток. Экземплярами данного класса являются
@@ -86,7 +88,7 @@ class mySecondaryThread(threading.Thread):
                     prtSock.settimeout(1)
                     prtSock.connect((self.host, self.port))
                     loggerCl.debug(f"Connection with {self.host} through TCP {self.port} was settled")
-                    clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port] = {"connection": "OK", "sendall": "NOT OK", "recv": "NOT OK"}
+                    clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port] = {"connection": "OK", "send": "NOT OK", "recv": "NOT OK"}
                     flag = "sendall simpleReq"
                     simpleRequest = {
                       "type": "simpleRequest",
@@ -101,11 +103,11 @@ class mySecondaryThread(threading.Thread):
                     loggerCl.debug(f"simpleRequest for {self.host} TCP {self.port} was decoded in json string successfully")
                     prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
                     loggerCl.debug(f"simpleRequest for {self.host} TCP {self.port} was sent successfully")
-                    clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["sendall"] = "OK"
+                    clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["send"] = "OK"
                     flag = "recv simpleResp"
                     rcv = prtSock.recv(1024)
                     loggerCl.debug(f"{flag} from {self.host} TCP {self.port} was recieved successfully")
-                    clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["recv"] = "OK"
+                    clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["recv"] = "OK"
                     msg = rcv.decode()
                     loggerCl.debug(f"{flag} from {self.host} TCP {self.port} was decoded successfully")
                     pyMsg = json.loads(msg)
@@ -117,19 +119,21 @@ class mySecondaryThread(threading.Thread):
                 except (ConnectionError, socket.timeout):
                     loggerCl.error(f"Timeout Error on {flag} operation with {self.host} TCP {self.port}")
                     if flag == "connection":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
+                        clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
                     elif flag == "sendall simpleReq":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["sendall"] = "NOT OK"
+                        clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["send"] = "NOT OK"
                     elif flag == "recv simpleResp":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["recv"] = "NOT OK"
+                        clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["recv"] = "NOT OK"
                 except json.JSONDecodeError:
                     loggerCl.error(f"{flag} message {self.host} TCP {self.port} wasn\'t decoded in json string successfully")
                 except InterruptedError:
                     loggerCl.error(f"{flag} operations with {self.host} TCP {self.port} was interrupted")
                     if flag == "sendall simpleReq":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["sendall"] = "NOT OK"
+                        clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["send"] = "NOT OK"
                     elif flag == "recv simpleResp":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["recv"] = "NOT OK"
+                        clientReports[self.conn_id]["report"]["protocol"]["TCP"][self.port]["recv"] = "NOT OK"
+                finally:
+                    clientReports[self.conn_id]["num of ports"] += 1
 
 
         elif self.protocol == "UDP":
@@ -150,11 +154,11 @@ class mySecondaryThread(threading.Thread):
                     loggerCl.debug(f"simpleRequest for {self.host} UDP {self.port} was decoded in json string successfully")
                     prtSock.sendto(bytes(simpleRequest, encoding="utf-8"), (self.host, self.port))
                     loggerCl.debug(f"simpleRequest for {self.host} UDP {self.port} was sent successfully")
-                    clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port] = {"sendto": "OK", "recv": "NOT OK"}
+                    clientReports[self.conn_id]["report"]["protocol"]["UDP"][self.port] = {"send": "OK", "recv": "NOT OK"}
                     flag = "recv simpleResp"
                     rcv = prtSock.recv(1024)
                     loggerCl.debug(f"{flag.upper()} from {self.host} UDP {self.port} was recieved successfully")
-                    clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["recv"] = "OK"
+                    clientReports[self.conn_id]["report"]["protocol"]["UDP"][self.port]["recv"] = "OK"
                     msg = rcv.decode()
                     loggerCl.debug(f"Message from {self.host} UDP {self.port} was decoded successfully")
                     pyMsg = json.loads(msg)
@@ -172,11 +176,13 @@ class mySecondaryThread(threading.Thread):
                 except InterruptedError:
                     loggerCl.error(f"{flag} operations with {self.host} UDP {self.port} was interrupted")
                     if flag == "sendto simpleReq":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port] = {"sendto": "NOT OK", "recv": "NOT OK"}
+                        clientReports[self.conn_id]["report"]["protocol"]["UDP"][self.port] = {"send": "NOT OK", "recv": "NOT OK"}
                     if flag == "recv simpleResp":
-                        clientReport["report"][self.conn_id, self.host][self.host, self.protocol, self.port]["recv"] = "NOT OK"
+                        clientReports[self.conn_id]["report"]["protocol"]["UDP"][self.port]["recv"] = "NOT OK"
                 except:
                     loggerCl.exception("Unknown Error")
+                finally:
+                    clientReports[self.conn_id]["num of ports"] += 1
 
 # Класс - поток. Экземплярами данного класса являются
 # клиентские сокеты, через которые проходит соединение с сервером
@@ -196,11 +202,26 @@ class myThread(threading.Thread):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
         try:
             conn_id = str(uuid.uuid4())
+            port_counter = dic_len(self.portCheck)
             flag = "main connection"
             sock.settimeout(1)                                              # сокращаем время на установление соединения с сервером
             sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
             loggerCl.debug(f"Connection with {self.host} TCP {self.port} was settled successfully")
-            clientReport["report"][conn_id, self.host] = {}
+            clientReports[conn_id] = {
+                      "type": "clientReport",
+                      "command": "mainCheck",
+                      "connection id": conn_id,
+                      "message": "REPORT",
+                      "server": self.host,
+                      "num of ports": 0,
+                      "server respond time": None,
+                      "report": {
+                          "protocol": {
+                              "TCP": {},
+                              "UDP": {}
+                          }
+                      }
+                    }
             flag = "sendall mainRequest"
             # запрос на проверку порта 3242 (string)
             mainRequest = {
@@ -225,11 +246,11 @@ class myThread(threading.Thread):
             if pyMsg["type"] == "mainRespond":
                 mainCheckDic[self.host] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
                 loggerCl.debug(f"mainRespond from {self.host} TCP {self.port} was recieved successfully")
-                clientReport["report"][conn_id, self.host]["server respond time"] = recvTime - sendallTime
+                clientReports[conn_id]["server respond time"] = recvTime - sendallTime
             else:
                 mainCheckDic[self.host] = "UP-"
                 loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved successfully. Expected mainRespond.")
-                clientReport["report"][conn_id, self.host]["server respond time"] = recvTime - sendallTime
+                clientReports[conn_id]["server respond time"] = recvTime - sendallTime
 
             # проверяем список, всех ли мы опросили и все ли порты доступны
             # если нет, то говорим, что на каком-то порту проблемы и завершаем процесс
@@ -237,11 +258,9 @@ class myThread(threading.Thread):
                 if len(mainCheckDic) == len(serverDic)+1:
                     if mainCheckDic["status"] == "NOT OK":
                         loggerCl.error(f"Not all servers are working on TCP {self.port}")
-                        print(mainCheckDic)
                         return
                     else:
                         loggerCl.info(f"All servers are UP on TCP {self.port}")
-                        print(mainCheckDic)
                         break
 
             flag = "sendall portList"
@@ -291,7 +310,10 @@ class myThread(threading.Thread):
                     portThread = mySecondaryThread(self.host, port, protocol, conn_id)
                     portThread.start()
 
-            time.sleep(1)
+            while True:
+                if port_counter == clientReports[conn_id]["num of ports"]:
+                    break
+
             flag = "sendall reportRequest"
             # Запрос отчета о выполнении полного цикла проверок на сервер
             reportRequest = {
@@ -311,9 +333,8 @@ class myThread(threading.Thread):
             pyMsg = json.loads(msg)
             loggerCl.debug(f"Message from {self.host} TCP {self.port} was decoded in python obj successfully")
             if pyMsg["type"] == "reportRespond":
-                print(pyMsg)
                 loggerCl.debug(f"reportRespond from {self.host} TCP {self.port} was decoded in python obj successfully")
-                serversReports[conn_id, self.host] = pyMsg
+                serversReports[conn_id] = pyMsg
             else:
                 loggerCl.warning(f"Unknown message from {self.host} TCP {self.port} was recieved successfully. Expected reportRespond")
 
@@ -324,8 +345,6 @@ class myThread(threading.Thread):
                 loggerCl.error(f"Connection problems {self.host} TCP {self.port} while {flag.upper()} operation")
             mainCheckDic["status"] = "NOT OK"
             mainCheckDic[self.host] = "DOWN"
-            if len(serverDic) == 1:
-                print(mainCheckDic)
             return
         except json.JSONDecodeError:
             loggerCl.warning(f"{flag} message {self.host} TCP {self.port} wasn\'t decoded in json string successfully")
@@ -389,6 +408,7 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                     reportRespond = json.dumps(reportsDic[pyMsg["connection id"]])
                     self.request.sendall(bytes(reportRespond, encoding='utf-8'))
                     loggerS.debug(f"reportRespond was sent to {self.client_address[0]}")
+                    print(reportsDic)
                     continue
 
                 elif pyMsg["type"] == "portList":
@@ -623,34 +643,39 @@ class main_thread(threading.Thread):
 
 # Блок отвечаюищй за запуск программы в выбранном режиме (client/server)
 if __name__ == "__main__":
-    if sys.argv[1] == 'client':
-        serverListFileName = sys.argv[2]
-        try:
-            with open(serverListFileName, 'r') as f_r:
-                serverDic = json.load(f_r)
-                # Создаем потоки, в вкоторых будет происходить проверка порта 3242
-                # и дальнейшая проверка других портов, если все сервера доступны на 3242
-                for srv in serverDic:
-                    thread = myThread(srv["host"], 3242, srv["ports"])
-                    checkList.append(thread)
-                    thread.start()
+    if len(sys.argv) == 1:
+        print("Choose mode server/client")
+    elif sys.argv[1] == 'client':
+        if len(sys.argv) == 2:
+            print("Choose file with list of servers")
+        elif len(sys.argv) == 3:
+            serverListFileName = sys.argv[2]
+            try:
+                with open(serverListFileName, 'r') as f_r:
+                    serverDic = json.load(f_r)
+                    # Создаем потоки, в вкоторых будет происходить проверка порта 3242
+                    # и дальнейшая проверка других портов, если все сервера доступны на 3242
+                    for srv in serverDic:
+                        thread = myThread(srv["host"], 3242, srv["ports"])
+                        checkList.append(thread)
+                        thread.start()
 
-                # Проверка завершения всех вызванных потоков
-                for srv in checkList:
-                    print(srv.getName())
-                    print(srv.isAlive())
-                    if srv.isAlive():
-                        srv.join()
-                        print('STOPPED')
-                    else:
-                        print("ALREADY STOPPED")
+                    # Ожидание завершения всех вызванных потоков
+                    for srv in checkList:
+                        if srv.isAlive():
+                            srv.join()
+                            #print('STOPPED')
+                        else:
+                            #print("ALREADY STOPPED")
+                            pass
 
-        except:
-            print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
+            except:
+                print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
 
+        print(mainCheckDic)
         print(serversReports)
+        print(clientReports)
         print("FIN")
-        print(clientReport)
 
     elif sys.argv[1] == "server":
         mainThread = main_thread(hostAddress, 3242)
