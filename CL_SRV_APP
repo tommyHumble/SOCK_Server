@@ -22,6 +22,32 @@ def get_ip():
 # ip клиента/сервера
 hostAddress = get_ip()
 
+def form_report(cl, srv):
+    report = {}
+    report["client"] = hostAddress
+    report["server"] = cl["server"]
+    report["respond time"] = cl["server respond time"]
+    report["protocol"] = {}
+
+    if srv["report"]["protocol"]["TCP"]:
+        report["protocol"]["TCP"] = {}
+        for port in srv["report"]["protocol"]["TCP"].keys():
+            # Важно, что порт в отчете клиента указывается как int а в отчете с сервера указывается как str (из-за декодирования в json строку на стороне сервера)
+            if srv["report"]["protocol"]["TCP"][port]["send"] == "OK" and cl["report"]["protocol"]["TCP"][int(port)]["send"] == "OK" and srv["report"]["protocol"]["TCP"][port]["recv"] == "OK" and cl["report"]["protocol"]["TCP"][int(port)]["recv"] == "OK":
+                report["protocol"]["TCP"][port] = "OK"
+            else:
+                report["protocol"]["TCP"][port] = "NOT OK"
+
+    if srv["report"]["protocol"]["UDP"]:
+        report["protocol"]["UDP"] = {}
+        for port in srv["report"]["protocol"]["UDP"].keys():
+            if srv["report"]["protocol"]["UDP"][port]["send"] == "OK" and cl["report"]["protocol"]["UDP"][int(port)]["send"] == "OK" and srv["report"]["protocol"]["UDP"][port]["recv"] == "OK" and cl["report"]["protocol"]["UDP"][int(port)]["recv"] == "OK":
+                report["protocol"]["UDP"][port] = "OK"
+            else:
+                report["protocol"]["UDP"][port] = "NOT OK"
+
+    return report
+
 # Настройка логгера для сервера
 loggerS = logging.getLogger("Server_Side")
 loggerS.setLevel(logging.DEBUG)
@@ -38,7 +64,7 @@ fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(me
 fileHandler.setFormatter(fileFormatter)
 loggerCl.addHandler(fileHandler)
 
-# Отчет со стороны клиента (client)
+# Отчет со стороны только клиента (client)
 clientReports = {}
 
 # Список экземпляров потоков серверов запущенных на портах {(8080, "UDP"): Thread Obj, ...}  (server)
@@ -58,6 +84,9 @@ mainCheckDic = {"status": "OK"}
 
 # Словарь всех отчетов, которые клиент получил от серверов по 3242 (client)
 serversReports = {}
+
+# Итоговые отчеты, полученные путем сравнения клиентского и серверного отчета (client)
+finalReports = {}
 
 # ф-ция для вычисления количества портов, которые необходимо проверить
 def dic_len(dic):
@@ -202,7 +231,8 @@ class myThread(threading.Thread):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            # создаем сокет
         try:
             conn_id = str(uuid.uuid4())
-            port_counter = dic_len(self.portCheck)
+            #port_counter = dic_len(self.portCheck)
+            threadList = []
             flag = "main connection"
             sock.settimeout(1)                                              # сокращаем время на установление соединения с сервером
             sock.connect((self.host, self.port))                            # Устанавливаем соединение с сервером на порту 3242
@@ -308,11 +338,16 @@ class myThread(threading.Thread):
             for protocol, ports in self.portCheck.items():
                 for port in ports:
                     portThread = mySecondaryThread(self.host, port, protocol, conn_id)
+                    threadList.append(portThread)
                     portThread.start()
 
-            while True:
-                if port_counter == clientReports[conn_id]["num of ports"]:
-                    break
+            for thr in threadList:
+                if thr.isAlive():
+                    thr.join()
+
+            # while True:
+            #     if port_counter == clientReports[conn_id]["num of ports"]:
+            #         break
 
             flag = "sendall reportRequest"
             # Запрос отчета о выполнении полного цикла проверок на сервер
@@ -408,7 +443,6 @@ class MyTCPRequestHandler(socketserver.StreamRequestHandler):
                     reportRespond = json.dumps(reportsDic[pyMsg["connection id"]])
                     self.request.sendall(bytes(reportRespond, encoding='utf-8'))
                     loggerS.debug(f"reportRespond was sent to {self.client_address[0]}")
-                    print(reportsDic)
                     continue
 
                 elif pyMsg["type"] == "portList":
@@ -668,13 +702,18 @@ if __name__ == "__main__":
                         else:
                             #print("ALREADY STOPPED")
                             pass
+                    checkList = []
 
             except:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
 
+        for id in clientReports.keys():
+            finalReports[id] = form_report(clientReports[id], serversReports[id])
+
         print(mainCheckDic)
         print(serversReports)
         print(clientReports)
+        print(finalReports)
         print("FIN")
 
     elif sys.argv[1] == "server":
