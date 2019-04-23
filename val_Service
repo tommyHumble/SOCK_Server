@@ -1,0 +1,764 @@
+
+import socketserver
+import json
+import threading
+import time
+import socket
+import logging
+import sys
+import uuid
+
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+# ip клиента/сервера
+hostAddress = get_ip()
+
+# Клиентские отчеты о состоянии серверов которых мы опросили (client)
+mainClientReports = {}
+
+# Серверные отчеты о состоянии сервера который был опрошен (client)
+mainServerReports = {}
+
+# Итоговые отчеты (client)
+finalReports = {}
+
+# Контрольный словарь. Если хоть 1 сервер не поднят, то нет смысла делать что-либо дальше (client)
+serversStatusDic = {"status": "OK"}
+
+# Итоговые отчеты от опрашиваемых серверов (client)
+finalServerReports = {}
+
+# Отчеты сервера, которые он отправляет клиенту, о их взаимодействии (server)
+serverPersonalReports = {}
+
+# Словарь сокет-серверов, которые уже запущены на сервере и их не нужно перезапускать (port, protocol)(server)
+serveingPorts = {}
+
+# Ф-ция, которая формирует итоговый отчет на основе клиентского и серверных отчетов
+def form_report(cl, srv):
+    report = {}
+    report["client"] = hostAddress
+    report["server"] = cl["server"]
+    report["respond time"] = cl["server respond time"]
+    report["protocol"] = {}
+
+    if srv["report"]["protocol"]["TCP"]:
+        report["protocol"]["TCP"] = {}
+        for port in srv["report"]["protocol"]["TCP"].keys():
+            # Важно, что порт в отчете клиента указывается как int а в отчете с сервера указывается как str (из-за декодирования в json строку на стороне сервера)
+            if srv["report"]["protocol"]["TCP"][port]["send"] == "OK" and cl["report"]["protocol"]["TCP"][int(port)]["send"] == "OK" and srv["report"]["protocol"]["TCP"][port]["recv"] == "OK" and cl["report"]["protocol"]["TCP"][int(port)]["recv"] == "OK":
+                report["protocol"]["TCP"][port] = "OK"
+            else:
+                report["protocol"]["TCP"][port] = "NOT OK"
+
+    if srv["report"]["protocol"]["UDP"]:
+        report["protocol"]["UDP"] = {}
+        for port in srv["report"]["protocol"]["UDP"].keys():
+            if srv["report"]["protocol"]["UDP"][port]["send"] == "OK" and cl["report"]["protocol"]["UDP"][int(port)]["send"] == "OK" and srv["report"]["protocol"]["UDP"][port]["recv"] == "OK" and cl["report"]["protocol"]["UDP"][int(port)]["recv"] == "OK":
+                report["protocol"]["UDP"][port] = "OK"
+            else:
+                report["protocol"]["UDP"][port] = "NOT OK"
+    return report
+
+# Настройка логгера для сервера
+loggerS = logging.getLogger("Server_Side")
+loggerS.setLevel(logging.DEBUG)
+fileHandler = logging.FileHandler("server_logs.log", mode="w")
+fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+fileHandler.setFormatter(fileFormatter)
+loggerS.addHandler(fileHandler)
+
+# Настройка логгера для клиента
+loggerCl = logging.getLogger("Client_Side")
+loggerCl.setLevel(logging.DEBUG)
+fileHandler = logging.FileHandler("client_logs.log", mode="w")
+fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+fileHandler.setFormatter(fileFormatter)
+loggerCl.addHandler(fileHandler)
+
+
+                                            ################ C L I E N T _ S I D E ###############
+
+# Поток, в котором запускается соединение с S по 3242
+
+class clientThread(threading.Thread):
+    def __init__(self, server_ip, server_port, port_checkList, server_checkList, *args):
+        self.server_ip = server_ip
+        self.server_main_port = server_port
+        # список портов, которые нужно будет передать серверу для активации
+        self.port_checkList = port_checkList
+        # список всех серваков которые нужно проверить
+        self.server_checkList = server_checkList
+        self.adds = args
+        threading.Thread.__init__(self)
+
+    def run(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(3)
+            conn_id = str(uuid.uuid4())
+            try:
+                flag = "main connection"
+                sock.connect((self.server_ip, self.server_main_port))
+                loggerCl.debug(f"Connection with {self.server_ip} TCP {self.server_main_port} was settled successfully")
+                mainClientReports[conn_id] = {
+                          "type": "clientReport",
+                          "connection id": conn_id,
+                          "server": self.server_ip,
+                          "server respond time": None,
+                          "report": {
+                              "protocol": {
+                                  "TCP": {},
+                                  "UDP": {}
+                              }
+                          }
+                        }
+
+                flag = "sendall mainRequest"
+                mainRequest = {
+                  "type": "mainRequest",
+                  "command": "mainCheck",
+                  "connection id": conn_id,
+                  "message": f"PORT {self.server_main_port} STATUS",
+                  "client": hostAddress
+                }
+                mainRequest = json.dumps(mainRequest)
+                sock.sendall(bytes(mainRequest, encoding='utf-8'))
+                sendallTime = time.time()
+                loggerCl.debug(f"mainRequest to {self.server_ip} TCP {self.server_main_port} was sent successfully")
+
+                flag = "recv mainRespond"
+                rcv = sock.recv(1024)
+                recvTime = time.time()
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                msg = rcv.decode()
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                pyMsg = json.loads(msg)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
+                if pyMsg["type"] == "mainRespond":
+                    serversStatusDic[self.server_ip] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
+                    loggerCl.debug(f"mainRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                    mainClientReports[conn_id]["server respond time"] = recvTime - sendallTime
+                else:
+                    serversStatusDic[self.server_ip] = "DOWN"
+                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received successfully. Expected mainRespond.")
+                    serversStatusDic["status"] = "NOT OK"
+
+                while True:
+                    if len(self.server_checkList)+1 == len(serversStatusDic):
+                        if serversStatusDic["status"] == "NOT OK":
+                            loggerCl.error(f"Not all servers are working on TCP {self.server_main_port}")
+                            return
+                        else:
+                            loggerCl.info(f"All servers are UP on TCP {self.server_main_port}")
+                            break
+
+                flag = "sendall portList"
+                portList = {
+                  "type": "portList",
+                  "command": "check",
+                  "connection id": conn_id,
+                  "ports": self.port_checkList,
+                  "client": hostAddress
+                }
+                portList = json.dumps(portList)
+                loggerCl.debug(f"portList for {self.server_ip} TCP {self.server_main_port} was decoded into json format successfully")
+                sock.sendall(bytes(portList, encoding="utf-8"))
+                loggerCl.debug(f"portList for {self.server_ip} TCP {self.server_main_port} was sent successfully")
+
+                flag = "recv portListRespond"
+                rcv = sock.recv(1024)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                msg = rcv.decode()
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                pyMsg = json.loads(msg)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
+                if pyMsg["type"] == "portListRespond":
+                    loggerCl.debug(f"portListRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                else:
+                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was recieved. Expected portListRespond")
+                    return
+
+                flag = "recv activePortListResp"
+                rcv = sock.recv(1024)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                msg = rcv.decode()
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                pyMsg = json.loads(msg)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
+                if pyMsg["type"] == "activePortListRespond":
+                    loggerCl.debug(f"activePortListRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                    if pyMsg["message"] == "NOT OK":
+                        loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
+                        return
+                else:
+                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected activePortListRespond")
+
+                # список потоков в которых клиент опрашивает UDP TCP порты
+                threadList = []
+                for protocol, ports in self.port_checkList.items():
+                    for port in ports:
+                        portThread = portCheckThread(self.server_ip, port, protocol, conn_id)
+                        threadList.append(portThread)
+                        portThread.start()
+                # Ожидание, когда все потоки завершат свою работу и отчеты на обеих сторонах будет готов
+                for thread in threadList:
+                    if thread.isAlive():
+                        thread.join()
+
+                flag = "sendall reportRequest"
+                reportRequest = {
+                  "type": "reportRequest",
+                  "command": "check",
+                  "connection id": conn_id,
+                  "message": "NEED REPORT",
+                  "client": hostAddress
+                }
+                reportRequest = json.dumps(reportRequest)
+                loggerCl.debug(f"reportRequest for {self.server_ip} TCP {self.server_main_port} was decoded in json string successfully")
+                sock.sendall(bytes(reportRequest, encoding="utf-8"))
+                loggerCl.debug(f"reportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully")
+
+                flag = "recv reportRespond"
+                rcv = sock.recv(1024)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was recieved successfully")
+                msg = rcv.decode()
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                pyMsg = json.loads(msg)
+                loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
+                if pyMsg["type"] == "reportRespond":
+                    loggerCl.debug(f"reportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                    mainServerReports[conn_id] = pyMsg
+                else:
+                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was recieved. Expected reportRespond")
+                    return
+
+                # Формируем общие отчеты
+                for id in mainClientReports.keys():
+                    finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+
+                if self.adds:
+                    # дублируем список серверов на проверку, но без дублировани сервера, на который его отправляем
+                    serverList = []
+                    for server in self.server_checkList:
+                        if server["ip"] != self.server_ip:
+                            serverList.append(server)
+                    flag = "sendall serverReportRequest"
+                    serverReportRequest = {
+                      "type": "serverReportRequest",
+                      "command": "check",
+                      "connection id": conn_id,
+                      "message": "NEED SERVER REPORT",
+                      "client": hostAddress,
+                      "server list": serverList
+                    }
+                    serverReportRequest = json.dumps(serverReportRequest)
+                    loggerCl.debug(f"serverReportRequest for {self.server_ip} TCP {self.server_main_port} was decoded in json string successfully")
+                    sock.sendall(bytes(serverReportRequest, encoding="utf-8"))
+                    loggerCl.debug(f"serverReportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully")
+
+                    flag = "recv serverReportRespond"
+                    rcv = sock.recv(1024)
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was recieved successfully")
+                    msg = rcv.decode()
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                    pyMsg = json.loads(msg)
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
+                    if pyMsg["type"] == "serverReportRespond":
+                        loggerCl.debug(f"serverReportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
+                        finalServerReports[conn_id] = pyMsg["report"]
+                    else:
+                        loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was recieved. Expected reportRespond")
+                        return
+
+            except (ConnectionError, socket.timeout):
+                if flag == "main connection":
+                    loggerCl.error(f"Connection with {self.server_ip} TCP {self.server_main_port} wasn\'t settled")
+                    serversStatusDic["status"] = "NOT OK"
+                    serversStatusDic[self.server_ip] = "DOWN"
+                else:
+                    loggerCl.error(f"Timeout/Connection problems with {self.server_ip} TCP {self.server_main_port} while {flag} operation")
+                return
+
+            except json.JSONDecodeError:
+                loggerCl.warning(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded in json string successfully")
+                return
+
+            except UnicodeDecodeError:
+                loggerCl.warning(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded successfully")
+                return
+
+            except InterruptedError:
+                loggerCl.warning(f"{flag} operations with {self.server_ip} TCP {self.server_main_port} was interrupted")
+                return
+
+
+
+class portCheckThread(threading.Thread):
+    def __init__(self, server_ip, server_port, protocol, connection_id):
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.protocol = protocol
+        self.conn_id = connection_id
+        threading.Thread.__init__(self)
+
+    def run(self):
+        if self.protocol == "TCP":
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
+                try:
+                    prtSock.settimeout(3)
+                    flag = "TCP port connection"
+                    prtSock.connect((self.server_ip, self.server_port))
+                    loggerCl.debug(f"Connection with {self.server_ip} TCP {self.server_port} was settled")
+                    mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port] = {"connection": "OK", "send": "NOT OK", "recv": "NOT OK"}
+
+                    flag = "sendall simpleRequest"
+                    simpleRequest = {
+                      "type": "simpleRequest",
+                      "command": "check",
+                      "connection id": self.conn_id,
+                      "message": "PORT STATUS",
+                      "client": hostAddress,
+                      "protocol": self.protocol,
+                      "port": self.server_port
+                    }
+                    simpleRequest = json.dumps(simpleRequest)
+                    loggerCl.debug(f"simpleRequest for {self.server_ip} TCP {self.server_port} was decoded in json string successfully")
+                    prtSock.sendall(bytes(simpleRequest, encoding='utf-8'))
+                    loggerCl.debug(f"simpleRequest for {self.server_ip} TCP {self.server_port} was sent successfully")
+                    mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port]["send"] = "OK"
+
+                    flag = "recv simpleRespond"
+                    rcv = prtSock.recv(1024)
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was recieved successfully")
+                    mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port]["recv"] = "OK"
+                    msg = rcv.decode()
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was decoded successfully")
+                    pyMsg = json.loads(msg)
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was decoded in python object successfully")
+                    if pyMsg["type"] == "simpleRespond":
+                        loggerCl.debug(f"simpleRespond from {self.server_ip} TCP {self.server_port} was recieved successfully")
+                    else:
+                        loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_port} was recieved. Expected simpleRespond")
+
+                except (ConnectionError, socket.timeout):
+                    loggerCl.error(f"Timeout/Connection problems with {self.server_ip} TCP {self.server_port} while {flag} operation")
+                    if flag == "TCP port connection":
+                        mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
+
+                except json.JSONDecodeError:
+                    loggerCl.error(f"While {flag} message {self.server_ip} TCP {self.server_port} wasn\'t decoded in json/python successfully")
+
+                except InterruptedError:
+                    loggerCl.error(f"{flag} operations with {self.server_ip} TCP {self.server_port} was interrupted")
+
+
+        elif self.protocol == "UDP":
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
+                try:
+                    prtSock.settimeout(3)
+                    flag = "sendto simpleRequest"
+                    simpleRequest = {
+                      "type": "simpleRequest",
+                      "command": "check",
+                      "connection id": self.conn_id,
+                      "message": "PORT STATUS",
+                      "client": hostAddress,
+                      "protocol": self.protocol,
+                      "port": self.server_port
+                    }
+                    simpleRequest = json.dumps(simpleRequest)
+                    loggerCl.debug(f"simpleRequest for {self.server_ip} UDP {self.server_port} was decoded in json string successfully")
+                    prtSock.sendto(bytes(simpleRequest, encoding="utf-8"), (self.server_ip, self.server_port))
+                    loggerCl.debug(f"simpleRequest for {self.server_ip} UDP {self.server_port} was sent successfully")
+                    mainClientReports[self.conn_id]["report"]["protocol"]["UDP"][self.server_port] = {"send": "OK", "recv": "NOT OK"}
+
+                    flag = "recv simpleRespond"
+                    rcv = prtSock.recv(1024)
+                    loggerCl.debug(f"Message from {self.server_ip} UDP {self.server_port} was recieved successfully")
+                    mainClientReports[self.conn_id]["report"]["protocol"]["UDP"][self.server_port]["recv"] = "OK"
+                    msg = rcv.decode()
+                    loggerCl.debug(f"Message from {self.server_ip} UDP {self.server_port} was decoded successfully")
+                    pyMsg = json.loads(msg)
+                    loggerCl.debug(f"Message from {self.server_ip} UDP {self.server_port} was decoded in python object successfully")
+                    if pyMsg["type"] == "simpleRespond":
+                        loggerCl.debug(f"simpleRespond from {self.server_ip} UDP {self.server_port} was recieved successfully")
+                    else:
+                        loggerCl.warning(f"Unknown message from {self.server_ip} UDP {self.server_port} was recieved. Expected simpleRespond")
+
+                except (ConnectionError, socket.timeout):
+                    loggerCl.error(f"Timeout/Connection problems with {self.server_ip} UDP {self.server_port} while {flag} operation")
+                    if flag == "TCP port connection":
+                        mainClientReports[self.conn_id]["report"]["protocol"]["UDP"][self.server_port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
+
+                except json.JSONDecodeError:
+                    loggerCl.error(f"While {flag} message {self.server_ip} UDP {self.server_port} wasn\'t decoded in json/python successfully")
+
+                except InterruptedError:
+                    loggerCl.error(f"{flag} operations with {self.server_ip} UDP {self.server_port} was interrupted")
+
+
+
+                                        ######################## S E R V E R _ S I D E ##############################
+
+class mainServerThread(threading.Thread):
+    def __init__(self, addr, port):
+        self.addr = addr
+        self.port = port
+        threading.Thread.__init__(self)
+        try:
+            self.server = myTCPServer((self.addr, self.port), mainPortTCPRequestHandler)
+            loggerS.debug(f"{self.addr} 'TCP' {self.port} SocketServer was created")
+        except:
+            loggerS.warning(f"{self.addr} 'TCP' {self.port} SocketServer wasn\'t created")
+
+    def run(self):
+        try:
+            self.server.serve_forever()
+        except:
+            loggerS.error(f"SocketServer on port {self.port} serve_forever error ")
+
+    def stop_server(self):
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+            loggerS.debug(f"{self.addr} 'TCP' {self.port} server was shutdown")
+        except:
+            loggerS.warning(f"{self.addr} 'TCP' {self.port} server couldn\'t be closed correctly")
+
+class myTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    pass
+
+class myUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+    pass
+
+class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        client_ip = self.client_address[0]
+        local_port = self.request.getsockname()[1]
+        loggerS.debug(f"Connection on TCP {local_port} with {client_ip} was settled")
+        while True:
+            try:
+                flag = "main TCP port recv"
+                rcv = self.request.recv(1024)
+                if not rcv:
+                    loggerS.debug(f"TCP connection on {local_port} with {client_ip} was completed")
+                    break
+                loggerS.debug(f"Message from {client_ip} was received on main TCP {local_port} successfully")
+                msg = rcv.decode()
+                loggerS.debug(f"Message from {client_ip} on main TCP {local_port} was decoded successfuly")
+                pyMsg = json.loads(msg)
+                loggerS.debug(f"Message from {client_ip} on main TCP {local_port} was decoded in python object successfuly")
+
+                if pyMsg["type"] == "mainRequest":
+                    loggerS.debug(f"mainRequest was recieved from {client_ip} on main TCP {local_port}")
+                    conn_id = pyMsg["connection id"]
+                    flag = "sendall mainRespond"
+                    mainRespond = {
+                      "type": "mainRespond",
+                      "command": "mainCheck",
+                      "connection id": conn_id,
+                      "message": "3242 IS UP",
+                      "server": hostAddress
+                    }
+                    mainRespond = json.dumps(mainRespond)
+                    loggerS.debug(f"mainRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
+                    self.request.sendall(bytes(mainRespond, encoding='utf-8'))
+                    loggerS.debug(f"mainRespond was sent to {client_ip} from main TCP {local_port}")
+                    continue
+
+                elif pyMsg["type"] == "reportRequest":
+                    loggerS.debug(f"reportRequest was recieved from {client_ip} on main TCP {local_port}")
+                    flag = "sendall repportRespond"
+                    reportRespond = json.dumps(serverPersonalReports[pyMsg["connection id"]])
+                    loggerS.debug(f"reportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
+                    self.request.sendall(bytes(reportRespond, encoding='utf-8'))
+                    loggerS.debug(f"reportRespond was sent to {client_ip} from main TCP {local_port}")
+                    continue
+
+                elif pyMsg["type"] == "serverReportRequest":
+                    loggerS.debug(f"serverReportRequest was recieved from {client_ip} on main TCP {local_port}")
+                    checkList = []
+                    for server in pyMsg["server list"]:
+                        thread = clientThread(server["ip"], local_port, server["ports"], pyMsg["server list"])
+                        checkList.append(thread)
+                        thread.start()
+                    for server in checkList:
+                        if server.isAlive():
+                            server.join()
+                    for id in mainClientReports.keys():
+                        finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+
+                    flag = "sendall serverReportRespond"
+                    serverReportRespond = {
+                      "type": "serverReportRespond",
+                      "command": "mainCheck",
+                      "server": hostAddress,
+                      "report": finalReports
+                    }
+                    serverReportRespond = json.dumps(serverReportRespond)
+                    loggerS.debug(f"serverReportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
+                    self.request.sendall(bytes(serverReportRespond, encoding='utf-8'))
+                    loggerS.debug(f"serverReportRespond was sent to {client_ip} from main TCP {local_port}")
+                    continue
+
+                elif pyMsg["type"] == "portList":
+                    loggerS.debug(f"portList was received from {client_ip} main TCP {local_port} successfully")
+                    flag = "sendall portListResp"
+                    portListRespond = {
+                      "type": "portListRespond",
+                      "command": "mainCheck",
+                      "connection id": conn_id,
+                      "message": "OK",
+                      "server": hostAddress
+                    }
+                    portListRespond = json.dumps(portListRespond)
+                    self.request.sendall(bytes(portListRespond, encoding='utf-8'))
+                    loggerS.debug(f"portListRespond was sent to {self.client_address[0]} successfully")
+                    serverPersonalReports[conn_id] = {
+                      "type": "reportRespond",
+                      "command": "mainCheck",
+                      "connection id": conn_id,
+                      "message": "REPORT",
+                      "server": hostAddress,
+                      "report": {
+                          "protocol": {
+                              "TCP": {},
+                              "UDP": {}
+                          }
+                      }
+                    }
+                else:
+                    loggerS.warning(f"Unknown message was received from {client_ip}. Connection on TCP {local_port} was stopped.")
+                    break
+
+                flag = "sendall activePortList"
+                activePortListRespond = {
+                  "type": "activePortListRespond",
+                  "command": "mainCheck",
+                  "connection id": conn_id,
+                  "message": "OK",
+                  "server": hostAddress
+                }
+                for protocol, ports in pyMsg["ports"].items():
+                    for port in ports:
+                        if (port, protocol) in serveingPorts.keys():
+                            loggerS.debug(f"{protocol} server on {port} is already launched")
+                            serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "OK", "recv": "NOT OK", "send": "NOT OK"}
+                        else:
+                            thread = portThread(port, protocol, conn_id)
+                            thread.start()
+                            if thread.isAlive():
+                                serveingPorts[port, protocol] = thread
+                            else:
+                                activePortListRespond["message"] = "NOT OK"
+
+                if activePortListRespond["message"] == "NOT OK":
+                    loggerS.error("Didn\'t manage to activate servers on all ports")
+                    del serverPersonalReports[conn_id]
+                    break
+
+                activePortListRespond = json.dumps(activePortListRespond)
+                loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
+                self.request.sendall(bytes(activePortListRespond, encoding='utf-8'))
+                loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was sent successfully")
+
+            except (socket.timeout, ConnectionError):
+                loggerS.error(f"Timeout/Connection error with {client_ip} TCP {local_port} while {flag} operation")
+                break
+
+            except UnicodeDecodeError:
+                loggerS.error(f"{flag} from {client_ip} TCP {local_port} wasn't decoded")
+                break
+
+            except json.decoder.JSONDecodeError:
+                loggerS.error(f"{flag} from {client_ip} TCP {local_port} wasn't decoded json/python")
+                break
+
+            except InterruptedError:
+                loggerS.error(f"{flag} operation with {client_ip} TCP {local_port} was interrupted")
+                break
+
+class portThread(threading.Thread):
+    def __init__(self, port, protocol, connection_id):
+        self.port = port
+        self.protocol = protocol
+        self.conn_id = connection_id
+        self.server = None
+        threading.Thread.__init__(self)
+        self.setDaemon(True)
+        try:
+            if self.protocol == "TCP":
+                self.server = myTCPServer((hostAddress, self.port), myPortTCPRequestHandler)
+                loggerS.debug(f"{hostAddress} TCP {self.port} SocketServer was created")
+                serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port] = {"sockServ creation": "OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
+            elif self.protocol == "UDP":
+                self.server = myUDPServer((hostAddress, self.port), myPortUDPRequestHandler)
+                loggerS.debug(f"{hostAddress} UDP {self.port} SocketServer was created")
+                serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port] = {"sockServ creation": "OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
+        except:
+            loggerS.error(f"couldn\'t create SocketServer on {hostAddress} {self.protocol} {self.port}")
+            serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port] = {"sockServ creation": "NOT OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
+
+    def run(self):
+        try:
+            serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port]["serve_forever"] = "OK"
+            self.server.serve_forever()
+        except:
+            mainServerReports[self.conn_id]["report"]["protocol"][self.protocol][self.port]["serve_forever"] = "NOT OK"
+            loggerS.error(f"couldn\'t launche serve_forever SocketServer on {hostAddress} {self.protocol} {self.port}")
+
+    def stop_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        loggerS.debug(f"{hostAddress} {self.protocol} {self.port} server was shutdown")
+
+class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        client_ip = self.client_address[0]
+        local_port = self.request.getsockname()[1]
+        try:
+            flag = "recv"
+            rcv = self.request.recv(1024)
+            loggerS.debug(f"Message from {client_ip} TCP {local_port} was received successfully")
+            msg = rcv.decode()
+            loggerS.debug(f"Message from {client_ip} TCP {local_port} was decoded successfully")
+            pyMsg = json.loads(msg)
+            loggerS.debug(f"Message from {client_ip} TCP {local_port} was decoded in python object format successfully")
+            if pyMsg["type"] == "simpleRequest":
+                loggerS.debug(f"simpleRequest from {client_ip} TCP {local_port} was received successfully")
+                serverPersonalReports[pyMsg["connection id"]]["report"]["protocol"]["TCP"][local_port]["recv"] = "OK"
+            else:
+                loggerS.warning(f"Unknwon message from {client_ip} TCP {local_port} was received successfully. Expected simpleRequest")
+                return
+
+            flag = "sendall"
+            simpleRespond = {
+              "type": "simpleRespond",
+              "command": "mainCheck",
+              "connection id": pyMsg["connection id"],
+              "message": "OK",
+              "server": hostAddress,
+              "protocol": "TCP",
+              "port": local_port
+            }
+            simpleRespond = json.dumps(simpleRespond)
+            loggerS.debug(f"simpleRespond {client_ip} TCP {local_port} was decoded in json string successfully")
+            self.request.sendall(bytes(simpleRespond, encoding='utf-8'))
+            serverPersonalReports[pyMsg["connection id"]]["report"]["protocol"]["TCP"][local_port]["send"] = "OK"
+            loggerS.debug(f"simpleRespond was sent to {client_ip} TCP {local_port}")
+        except UnicodeDecodeError:
+            loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} message wasn\'t decoded")
+        except json.decoder.JSONDecodeError:
+            loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} message wasn\'t decoded in other format")
+        except (ConnectionError, InterruptedError):
+            loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} connection was lost")
+
+
+class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
+    def handle(self):
+        client_ip = self.client_address[0]
+        local_port = self.socket.getsockname()[1]
+        try:
+            flag = "recv"
+            rcv = self.request[0]
+            loggerS.debug(f"Message from {client_ip} UDP {local_port} was received successfully")
+            msg = rcv.decode()
+            loggerS.debug(f"Message from {client_ip} UDP {local_port} was decoded successfully")
+            socket = self.request[1]
+            pyMsg = json.loads(msg)
+            loggerS.debug(f"Message from {client_ip} UDP {local_port} was decoded in python object successfully")
+            if pyMsg["type"] == "simpleRequest":
+                loggerS.debug(f"simpleRequest from {client_ip} UDP {local_port} was received successfully")
+                serverPersonalReports[pyMsg["connection id"]]["report"]["protocol"]["UDP"][local_port]["recv"] = "OK"
+            else:
+                loggerS.warning(f"Unknown message from {client_ip} UDP {local_port} was received successfully. Expected simpleRequest")
+                return
+
+            flag = "sendto"
+            simpleRespond = {
+              "type": "simpleRespond",
+              "command": "mainCheck",
+              "connection id": pyMsg["connection id"],
+              "message": "OK",
+              "server": hostAddress,
+              "protocol": "UDP",
+              "port": local_port
+            }
+            simpleRespond = json.dumps(simpleRespond)
+            loggerS.debug(f"simpleRespond for {client_ip} UDP {local_port} was decoded in json string successfully")
+            socket.sendto(bytes(simpleRespond, encoding='utf-8'), self.client_address)
+            loggerS.debug(f"simpleRespond for {client_ip} UDP {local_port} was sent successfully")
+            serverPersonalReports[pyMsg["connection id"]]["report"]["protocol"]["UDP"][local_port]["send"] = "OK"
+        except UnicodeDecodeError:
+            loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} message wasn\'t decoded")
+        except json.decoder.JSONDecodeError:
+            loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} message wasn\'t decoded in other format")
+        except (ConnectionError, InterruptedError):
+            loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} connection was lost")
+
+
+
+            ############################################ L A U N C H _ T H E _ P R O G R A M M ##############################
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        print("Choose mode server/client")
+    elif sys.argv[1] == 'cl':
+        if len(sys.argv) == 2:
+            print("Choose file with list of servers")
+        elif len(sys.argv) == 3:
+            serverListFileName = sys.argv[2]
+            try:
+                with open(serverListFileName, 'r') as f_r:
+                    serversList = json.load(f_r)
+                    checkList = []
+                    for server in serversList:
+                        thread = clientThread(server["ip"], 3242, server["ports"], serversList, "main")
+                        checkList.append(thread)
+                        thread.start()
+                    for server in checkList:
+                        if server.isAlive():
+                            print("wait")
+                            print("status:", serversStatusDic)
+                            server.join()
+                            print("done")
+            except json.JSONDecodeError:
+                print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
+        else:
+            print("Unknown arguments were given")
+
+        print("status:", serversStatusDic)
+        print("client reports:", mainClientReports)
+        print("server reports:", mainServerReports)
+        print("final reports:", finalReports)
+        print("final reports from servers:", finalServerReports)
+        print("FIN")
+
+    elif sys.argv[1] == "srv":
+        mainThread = mainServerThread(hostAddress, 3242)
+        mainThread.start()
+
+        while True:
+            try:
+                if not mainThread.isAlive():
+                    print("Server can\'t be launched.\nCheck TCP 3242 port.")
+                    break
+                else:
+                    print("Active threads (port servers):", threading.activeCount())
+                    print(serveingPorts)
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                mainThread.stop_server()
+                print("Server was stopped")
+                break
+    else:
+        print("Incorrect arguments were given")
