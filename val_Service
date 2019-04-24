@@ -157,8 +157,15 @@ class clientThread(threading.Thread):
                     if len(self.server_checkList)+1 == len(serversStatusDic):
                         if serversStatusDic["status"] == "NOT OK":
                             loggerCl.error(f"Not all servers are working on TCP {self.server_main_port}")
+                            finalReports[conn_id] = {
+                                "status": "NOT OK",
+                                "problem": "NO ACCESS TO ALL SERVERS",
+                                "client": hostAddress,
+                                "report": serversStatusDic
+                            }
                             return
                         else:
+                            finalReports[conn_id] = {"status": "OK"}
                             loggerCl.info(f"All servers are UP on TCP {self.server_main_port}")
                             break
 
@@ -198,6 +205,13 @@ class clientThread(threading.Thread):
                 if pyMsg["type"] == "activePortListRespond":
                     loggerCl.debug(f"activePortListRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     if pyMsg["message"] == "NOT OK":
+                        finalReports[conn_id] = {
+                                "status": "NOT OK",
+                                "problem": "NOT ALL PORTS WERE ACTIVATED",
+                                "client": hostAddress,
+                                "server": self.server_ip,
+                                "report": serversStatusDic
+                            }
                         loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
                         return
                 else:
@@ -249,6 +263,8 @@ class clientThread(threading.Thread):
                     for server in self.server_checkList:
                         if server["ip"] != self.server_ip:
                             serverList.append(server)
+                    if not serverList:
+                        return
                     print("Server list:", serverList, "Send to:", self.server_ip)
                     flag = "sendall serverReportRequest"
                     serverReportRequest = {
@@ -493,11 +509,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     for server in checkList:
                         if server.isAlive():
                             server.join()
-                    for id in mainClientReports.keys():
+                    for id in mainServerReports.keys():
                         finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
 
                     flag = "sendall serverReportRespond"
-                    print("This report I will send to client:", finalReports)
                     serverReportRespond = {
                       "type": "serverReportRespond",
                       "command": "mainCheck",
@@ -587,7 +602,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
             except InterruptedError:
                 loggerS.error(f"{flag} operation with {client_ip} TCP {local_port} was interrupted")
                 break
-            
+
 class portThread(threading.Thread):
     def __init__(self, port, protocol, connection_id):
         self.port = port
