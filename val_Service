@@ -103,7 +103,7 @@ class clientThread(threading.Thread):
 
     def run(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(3)
+            sock.settimeout(2)
             conn_id = str(uuid.uuid4())
             try:
                 flag = "main connection"
@@ -243,6 +243,7 @@ class clientThread(threading.Thread):
 
                 if self.adds:
                     # дублируем список серверов на проверку, но без дублирования сервера, на который его отправляем
+                    sock.settimeout(4)
                     serverList = []
                     for server in self.server_checkList:
                         if server["ip"] != self.server_ip:
@@ -311,7 +312,7 @@ class portCheckThread(threading.Thread):
         if self.protocol == "TCP":
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
                 try:
-                    prtSock.settimeout(3)
+                    prtSock.settimeout(1)
                     flag = "TCP port connection"
                     prtSock.connect((self.server_ip, self.server_port))
                     loggerCl.debug(f"Connection with {self.server_ip} TCP {self.server_port} was settled")
@@ -361,7 +362,7 @@ class portCheckThread(threading.Thread):
         elif self.protocol == "UDP":
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as prtSock:
                 try:
-                    prtSock.settimeout(3)
+                    prtSock.settimeout(1)
                     flag = "sendto simpleRequest"
                     simpleRequest = {
                       "type": "simpleRequest",
@@ -506,6 +507,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     loggerS.debug(f"serverReportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                     self.request.sendall(bytes(serverReportRespond, encoding='utf-8'))
                     loggerS.debug(f"serverReportRespond was sent to {client_ip} from main TCP {local_port}")
+                    break
                     continue
 
                 elif pyMsg["type"] == "portList":
