@@ -7,6 +7,7 @@ import socket
 import logging
 import sys
 import uuid
+import sqlite3
 
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -586,7 +587,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
             except InterruptedError:
                 loggerS.error(f"{flag} operation with {client_ip} TCP {local_port} was interrupted")
                 break
-
+            
 class portThread(threading.Thread):
     def __init__(self, port, protocol, connection_id):
         self.port = port
@@ -748,6 +749,10 @@ if __name__ == "__main__":
         print("server reports:", mainServerReports)
         print("final reports:", finalReports)
         print("final reports from servers:", finalServerReports)
+
+        # создадим бд и присоеденимся к ней чтобы работать через cursor
+
+
         print("FIN")
 
     elif sys.argv[1] == "srv":
