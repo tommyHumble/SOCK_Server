@@ -238,19 +238,16 @@ class clientThread(threading.Thread):
                     loggerCl.debug(f"reportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     mainServerReports[conn_id] = pyMsg
                 else:
-                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was recieved. Expected reportRespond")
+                    loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected reportRespond")
                     return
 
-                # Формируем общие отчеты
-                for id in mainClientReports.keys():
-                    finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
-
                 if self.adds:
-                    # дублируем список серверов на проверку, но без дублировани сервера, на который его отправляем
+                    # дублируем список серверов на проверку, но без дублирования сервера, на который его отправляем
                     serverList = []
                     for server in self.server_checkList:
                         if server["ip"] != self.server_ip:
                             serverList.append(server)
+                    print("Server list:", serverList, "Send to:", self.server_ip)
                     flag = "sendall serverReportRequest"
                     serverReportRequest = {
                       "type": "serverReportRequest",
@@ -498,6 +495,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                         finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
 
                     flag = "sendall serverReportRespond"
+                    print("This report I will send to client:", finalReports)
                     serverReportRespond = {
                       "type": "serverReportRespond",
                       "command": "mainCheck",
@@ -727,10 +725,17 @@ if __name__ == "__main__":
                         thread.start()
                     for server in checkList:
                         if server.isAlive():
-                            print("wait")
-                            print("status:", serversStatusDic)
                             server.join()
-                            print("done")
+                    if serversStatusDic["status"] == "OK":
+                        print("All servers are UP")
+                        # Формируем общие отчеты
+                        for id in mainClientReports.keys():
+                            print("client rep:", mainClientReports[id])
+                            print("server rep:", mainServerReports[id])
+                            finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                            print("final rep:", finalReports[id])
+                    else:
+                        print("Not all servers are UP")
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
