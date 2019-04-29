@@ -23,6 +23,11 @@ def get_ip():
 # ip клиента/сервера
 hostAddress = get_ip()
 
+# Имя машины
+hostName = socket.gethostname()
+hostName = hostName.strip()
+hostName = str(hostName)
+
 # Клиентские отчеты о состоянии серверов которых мы опросили (client)
 mainClientReports = {}
 
@@ -47,9 +52,12 @@ serveingPorts = {}
 # Ф-ция, которая формирует итоговый отчет на основе клиентского и серверных отчетов
 def form_report(cl, srv):
     report = {}
-    report["client"] = hostAddress
-    report["server"] = cl["server"]
+    report["client address"] = hostAddress
+    report["client name"] = hostName
+    report["server address"] = srv["server address"]
+    report["server name"] = srv["server name"]
     report["respond time"] = cl["server respond time"]
+    report["status"] = "OK"
     report["protocol"] = {}
 
     if srv["report"]["protocol"]["TCP"]:
@@ -69,6 +77,9 @@ def form_report(cl, srv):
             else:
                 report["protocol"]["UDP"][port] = "NOT OK"
     return report
+
+def form_final_reort(client_status_dic, client_reports, server_reports):
+    pass
 
 # Настройка логгера для сервера
 loggerS = logging.getLogger("Server_Side")
@@ -100,20 +111,23 @@ class clientThread(threading.Thread):
         # список всех серваков которые нужно проверить
         self.server_checkList = server_checkList
         self.adds = args
+        self.conn_id = str(uuid.uuid4())
         threading.Thread.__init__(self)
 
     def run(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(2)
-            conn_id = str(uuid.uuid4())
+            #conn_id = str(uuid.uuid4())
             try:
                 flag = "main connection"
                 sock.connect((self.server_ip, self.server_main_port))
                 loggerCl.debug(f"Connection with {self.server_ip} TCP {self.server_main_port} was settled successfully")
-                mainClientReports[conn_id] = {
+                mainClientReports[self.conn_id] = {
                           "type": "clientReport",
-                          "connection id": conn_id,
-                          "server": self.server_ip,
+                          "client address": hostAddress,
+                          "client name": hostName,
+                          "server address": self.server_ip,
+                          "connection id": self.conn_id,
                           "server respond time": None,
                           "report": {
                               "protocol": {
@@ -127,7 +141,7 @@ class clientThread(threading.Thread):
                 mainRequest = {
                   "type": "mainRequest",
                   "command": "mainCheck",
-                  "connection id": conn_id,
+                  "connection id": self.conn_id,
                   "message": f"PORT {self.server_main_port} STATUS",
                   "client": hostAddress
                 }
@@ -147,7 +161,7 @@ class clientThread(threading.Thread):
                 if pyMsg["type"] == "mainRespond":
                     serversStatusDic[self.server_ip] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
                     loggerCl.debug(f"mainRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
-                    mainClientReports[conn_id]["server respond time"] = recvTime - sendallTime
+                    mainClientReports[self.conn_id]["server respond time"] = recvTime - sendallTime
                 else:
                     serversStatusDic[self.server_ip] = "DOWN"
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received successfully. Expected mainRespond.")
@@ -157,15 +171,16 @@ class clientThread(threading.Thread):
                     if len(self.server_checkList)+1 == len(serversStatusDic):
                         if serversStatusDic["status"] == "NOT OK":
                             loggerCl.error(f"Not all servers are working on TCP {self.server_main_port}")
-                            finalReports[conn_id] = {
+                            finalReports[self.conn_id] = {
+                                "client address": hostAddress,
+                                "client name": hostName,
                                 "status": "NOT OK",
                                 "problem": "NO ACCESS TO ALL SERVERS",
-                                "client": hostAddress,
                                 "report": serversStatusDic
                             }
                             return
                         else:
-                            finalReports[conn_id] = {"status": "OK"}
+                            finalReports[self.conn_id] = {"status": "OK"}
                             loggerCl.info(f"All servers are UP on TCP {self.server_main_port}")
                             break
 
@@ -173,9 +188,10 @@ class clientThread(threading.Thread):
                 portList = {
                   "type": "portList",
                   "command": "check",
-                  "connection id": conn_id,
+                  "client address": hostAddress,
+                  "client name": hostName,
+                  "connection id": self.conn_id,
                   "ports": self.port_checkList,
-                  "client": hostAddress
                 }
                 portList = json.dumps(portList)
                 loggerCl.debug(f"portList for {self.server_ip} TCP {self.server_main_port} was decoded into json format successfully")
@@ -205,11 +221,13 @@ class clientThread(threading.Thread):
                 if pyMsg["type"] == "activePortListRespond":
                     loggerCl.debug(f"activePortListRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     if pyMsg["message"] == "NOT OK":
-                        finalReports[conn_id] = {
+                        finalReports[self.conn_id] = {
+                                "client address": hostAddress,
+                                "client name": hostName,
+                                "server address": self.server_ip,
+                                "server name": pyMsg["server name"],
                                 "status": "NOT OK",
-                                "problem": "NOT ALL PORTS WERE ACTIVATED",
-                                "client": hostAddress,
-                                "server": self.server_ip,
+                                "problem": "NOT ALL PORTS ON SERVER WERE ACTIVATED",
                                 "report": serversStatusDic
                             }
                         loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
@@ -221,7 +239,7 @@ class clientThread(threading.Thread):
                 threadList = []
                 for protocol, ports in self.port_checkList.items():
                     for port in ports:
-                        portThread = portCheckThread(self.server_ip, port, protocol, conn_id)
+                        portThread = portCheckThread(self.server_ip, port, protocol, self.conn_id)
                         threadList.append(portThread)
                         portThread.start()
                 # Ожидание, когда все потоки завершат свою работу и отчеты на обеих сторонах будет готов
@@ -233,9 +251,11 @@ class clientThread(threading.Thread):
                 reportRequest = {
                   "type": "reportRequest",
                   "command": "check",
-                  "connection id": conn_id,
-                  "message": "NEED REPORT",
-                  "client": hostAddress
+                  "client address": hostAddress,
+                  "client name": hostName,
+                  "server address": self.server_ip,
+                  "connection id": self.conn_id,
+                  "message": "NEED REPORT"
                 }
                 reportRequest = json.dumps(reportRequest)
                 loggerCl.debug(f"reportRequest for {self.server_ip} TCP {self.server_main_port} was decoded in json string successfully")
@@ -251,7 +271,7 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
                 if pyMsg["type"] == "reportRespond":
                     loggerCl.debug(f"reportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
-                    mainServerReports[conn_id] = pyMsg
+                    mainServerReports[self.conn_id] = pyMsg
                 else:
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected reportRespond")
                     return
@@ -265,14 +285,14 @@ class clientThread(threading.Thread):
                             serverList.append(server)
                     if not serverList:
                         return
-                    print("Server list:", serverList, "Send to:", self.server_ip)
                     flag = "sendall serverReportRequest"
                     serverReportRequest = {
                       "type": "serverReportRequest",
                       "command": "check",
-                      "connection id": conn_id,
+                      "client address": hostAddress,
+                      "client name": hostName,
+                      "connection id": self.conn_id,
                       "message": "NEED SERVER REPORT",
-                      "client": hostAddress,
                       "server list": serverList
                     }
                     serverReportRequest = json.dumps(serverReportRequest)
@@ -281,15 +301,21 @@ class clientThread(threading.Thread):
                     loggerCl.debug(f"serverReportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully")
 
                     flag = "recv serverReportRespond"
-                    rcv = sock.recv(4096)
+                    rcv = b""
+                    while True:
+                        rcv_part = sock.recv(4096)
+                        rcv += rcv_part
+                        if len(rcv_part) < 4096:
+                            break
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was recieved successfully")
                     msg = rcv.decode()
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
                     pyMsg = json.loads(msg)
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
                     if pyMsg["type"] == "serverReportRespond":
+                        print("serverReportRespond from", self.server_ip, pyMsg)
                         loggerCl.debug(f"serverReportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
-                        finalServerReports[conn_id] = pyMsg["report"]
+                        finalServerReports[self.conn_id] = pyMsg["report"]
                     else:
                         loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was recieved. Expected reportRespond")
                         return
@@ -304,7 +330,7 @@ class clientThread(threading.Thread):
                 return
 
             except json.JSONDecodeError:
-                loggerCl.warning(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded in json string successfully")
+                loggerCl.warning(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded in json/python successfully")
                 return
 
             except UnicodeDecodeError:
@@ -339,9 +365,10 @@ class portCheckThread(threading.Thread):
                     simpleRequest = {
                       "type": "simpleRequest",
                       "command": "check",
+                      "client address": hostAddress,
+                      "client name": hostName,
                       "connection id": self.conn_id,
                       "message": "PORT STATUS",
-                      "client": hostAddress,
                       "protocol": self.protocol,
                       "port": self.server_port
                     }
@@ -353,7 +380,7 @@ class portCheckThread(threading.Thread):
 
                     flag = "recv simpleRespond"
                     rcv = prtSock.recv(4096)
-                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was recieved successfully")
+                    loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was received successfully")
                     mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port]["recv"] = "OK"
                     msg = rcv.decode()
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_port} was decoded successfully")
@@ -384,9 +411,10 @@ class portCheckThread(threading.Thread):
                     simpleRequest = {
                       "type": "simpleRequest",
                       "command": "check",
+                      "client address": hostAddress,
+                      "client name": hostName,
                       "connection id": self.conn_id,
                       "message": "PORT STATUS",
-                      "client": hostAddress,
                       "protocol": self.protocol,
                       "port": self.server_port
                     }
@@ -409,10 +437,8 @@ class portCheckThread(threading.Thread):
                     else:
                         loggerCl.warning(f"Unknown message from {self.server_ip} UDP {self.server_port} was recieved. Expected simpleRespond")
 
-                except (ConnectionError, socket.timeout):
-                    loggerCl.error(f"Timeout/Connection problems with {self.server_ip} UDP {self.server_port} while {flag} operation")
-                    if flag == "TCP port connection":
-                        mainClientReports[self.conn_id]["report"]["protocol"]["UDP"][self.server_port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
+                except socket.timeout:
+                    loggerCl.error(f"Timeout error with {self.server_ip} UDP {self.server_port} while {flag} operation")
 
                 except json.JSONDecodeError:
                     loggerCl.error(f"While {flag} message {self.server_ip} UDP {self.server_port} wasn\'t decoded in json/python successfully")
@@ -423,6 +449,7 @@ class portCheckThread(threading.Thread):
 
 
                                         ######################## S E R V E R _ S I D E ##############################
+
 
 class mainServerThread(threading.Thread):
     def __init__(self, addr, port):
@@ -465,8 +492,8 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                 flag = "main TCP port recv"
                 rcv = self.request.recv(4096)
                 if not rcv:
-                    loggerS.debug(f"TCP connection on {local_port} with {client_ip} was completed")
-                    break
+                        loggerS.debug(f"TCP connection on {local_port} with {client_ip} was completed")
+                        break
                 loggerS.debug(f"Message from {client_ip} was received on main TCP {local_port} successfully")
                 msg = rcv.decode()
                 loggerS.debug(f"Message from {client_ip} on main TCP {local_port} was decoded successfuly")
@@ -480,9 +507,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     mainRespond = {
                       "type": "mainRespond",
                       "command": "mainCheck",
+                      "server address": hostAddress,
+                      "server name": hostName,
                       "connection id": conn_id,
                       "message": "3242 IS UP",
-                      "server": hostAddress
                     }
                     mainRespond = json.dumps(mainRespond)
                     loggerS.debug(f"mainRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
@@ -502,31 +530,60 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                 elif pyMsg["type"] == "serverReportRequest":
                     loggerS.debug(f"serverReportRequest was recieved from {client_ip} on main TCP {local_port}")
                     checkList = []
+                    idList = []
+                    #finalReports[conn_id] = {}
                     for server in pyMsg["server list"]:
                         thread = clientThread(server["ip"], local_port, server["ports"], pyMsg["server list"])
+                        idList.append(thread.conn_id)
                         checkList.append(thread)
                         thread.start()
                     for server in checkList:
                         if server.isAlive():
                             server.join()
-                    for id in mainServerReports.keys():
-                        finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                    # for id in mainServerReports.keys():
+                    #     finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                    print("before forming reports")
+                    print("mainServerReports:", mainServerReports)
+                    print("mainClientReports:", mainClientReports)
+                    print("finalReports:", finalReports)
+                    for id in idList:
+                        if id in mainServerReports.keys():
+                            finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                            del mainServerReports[id]
+                        if id in mainClientReports.keys():
+                            del mainClientReports[id]
+                        print("1 reports was formed")
+                        print("before forming reports")
+                        print("mainServerReports:", mainServerReports)
+                        print("mainClientReports:", mainClientReports)
+                        print("finalReports:", finalReports)
 
+                    mainfinalReports = {}
+                    for id in idList:
+                        if id in finalReports.keys():
+                            mainfinalReports[id] = finalReports[id]
                     flag = "sendall serverReportRespond"
                     serverReportRespond = {
                       "type": "serverReportRespond",
                       "command": "mainCheck",
-                      "server": hostAddress,
+                      "server address": hostAddress,
+                      "server name": hostName,
+                      "connection id": conn_id,
                       "report": finalReports
                     }
-                    print(f"this python report I will send to {client_ip}:", serverReportRespond)
                     serverReportRespond = json.dumps(serverReportRespond)
                     print(f"this json string report I will send to {client_ip}:", serverReportRespond)
                     loggerS.debug(f"serverReportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                     self.request.sendall(bytes(serverReportRespond, encoding='utf-8'))
                     loggerS.debug(f"serverReportRespond was sent to {client_ip} from main TCP {local_port}")
+                    for id in idList:
+                        if id in finalReports.keys():
+                            del finalReports[id]
+                    print("all reports were deleted")
+                    print("mainServerReports:", mainServerReports)
+                    print("mainClientReports:", mainClientReports)
+                    print("finalReports:", finalReports)
                     break
-                    continue
 
                 elif pyMsg["type"] == "portList":
                     loggerS.debug(f"portList was received from {client_ip} main TCP {local_port} successfully")
@@ -534,9 +591,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     portListRespond = {
                       "type": "portListRespond",
                       "command": "mainCheck",
+                      "server address": hostAddress,
+                      "server name": hostName,
                       "connection id": conn_id,
-                      "message": "OK",
-                      "server": hostAddress
+                      "message": "OK"
                     }
                     portListRespond = json.dumps(portListRespond)
                     self.request.sendall(bytes(portListRespond, encoding='utf-8'))
@@ -544,9 +602,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     serverPersonalReports[conn_id] = {
                       "type": "reportRespond",
                       "command": "mainCheck",
+                      "server address": hostAddress,
+                      "server name": hostName,
                       "connection id": conn_id,
                       "message": "REPORT",
-                      "server": hostAddress,
                       "report": {
                           "protocol": {
                               "TCP": {},
@@ -562,9 +621,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                 activePortListRespond = {
                   "type": "activePortListRespond",
                   "command": "mainCheck",
+                  "server address": hostAddress,
+                  "server name": hostName,
                   "connection id": conn_id,
-                  "message": "OK",
-                  "server": hostAddress
+                  "message": "OK"
                 }
                 for protocol, ports in pyMsg["ports"].items():
                     for port in ports:
@@ -644,7 +704,6 @@ class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
         client_ip = self.client_address[0]
         local_port = self.request.getsockname()[1]
         try:
-            flag = "recv"
             rcv = self.request.recv(4096)
             loggerS.debug(f"Message from {client_ip} TCP {local_port} was received successfully")
             msg = rcv.decode()
@@ -662,9 +721,10 @@ class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
             simpleRespond = {
               "type": "simpleRespond",
               "command": "mainCheck",
+              "server address": hostAddress,
+              "server name": hostName,
               "connection id": pyMsg["connection id"],
               "message": "OK",
-              "server": hostAddress,
               "protocol": "TCP",
               "port": local_port
             }
@@ -705,9 +765,10 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
             simpleRespond = {
               "type": "simpleRespond",
               "command": "mainCheck",
+              "server address": hostAddress,
+              "server name": hostName,
               "connection id": pyMsg["connection id"],
               "message": "OK",
-              "server": hostAddress,
               "protocol": "UDP",
               "port": local_port
             }
@@ -747,23 +808,18 @@ if __name__ == "__main__":
                         if server.isAlive():
                             server.join()
                     if serversStatusDic["status"] == "OK":
-                        print("All servers are UP")
+                        print("All servers are UP:", serversStatusDic)
                         # Формируем общие отчеты
                         for id in mainClientReports.keys():
-                            print("client rep:", mainClientReports[id])
-                            print("server rep:", mainServerReports[id])
                             finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                             print("final rep:", finalReports[id])
                     else:
-                        print("Not all servers are UP")
+                        print("Not all servers are UP:", serversStatusDic)
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
             print("Unknown arguments were given")
 
-        print("status:", serversStatusDic)
-        print("client reports:", mainClientReports)
-        print("server reports:", mainServerReports)
         print("final reports:", finalReports)
         print("final reports from servers:", finalServerReports)
 
@@ -782,9 +838,13 @@ if __name__ == "__main__":
                     print("Server can\'t be launched.\nCheck TCP 3242 port.")
                     break
                 else:
-                    print("Active threads (port servers):", threading.activeCount())
-                    print(serveingPorts)
-                    time.sleep(60)
+                    # print("Active threads (port servers):", threading.activeCount())
+                    # print(serveingPorts)
+                    # time.sleep(60)
+                    time.sleep(30)
+                    print("reports for sending:", finalReports)
+                    print("server reports:", mainServerReports)
+                    print("client reports:", mainClientReports)
             except KeyboardInterrupt:
                 mainThread.stop_server()
                 print("Server was stopped")
