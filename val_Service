@@ -78,8 +78,50 @@ def form_report(cl, srv):
                 report["protocol"]["UDP"][port] = "NOT OK"
     return report
 
-def form_final_reort(client_status_dic, client_reports, server_reports):
-    pass
+def form_final_reort(client_reports, server_reports):
+    final_report = {"problems": {}}
+    for id, report in client_reports.items():
+        if report["client address"] not in final_report.keys():
+            final_report[report["client address"]] = {}
+        final_report[report["client address"]][report["server address"]] = {
+            "server name": report["server name"],
+            "respond time": report["respond time"],
+            "report": report["protocol"]
+        }
+        for protocol, ports in report["protocol"].items():
+            for port, status in ports.items():
+                if status == "NOT OK":
+                    if report["client address"] not in final_report["problems"].keys():
+                        final_report["problems"][report["client address"]] = {}
+                    if report["server address"] not in final_report["problems"][report["client address"]].keys():
+                        final_report["problems"][report["client address"]][report["server address"]] = {}
+                    if protocol not in final_report["problems"][report["client address"]][report["server address"]].keys():
+                        final_report["problems"][report["client address"]][report["server address"]][protocol] = {}
+                    final_report["problems"][report["client address"]][report["server address"]][protocol][port] = status
+
+    for id1, id2_dic in server_reports.items():
+        for id2, report in id2_dic.items():
+            if report["client address"] not in final_report.keys():
+                final_report[report["client address"]] = {}
+            if report["status"] == "OK":
+                final_report[report["client address"]][report["server address"]] = {
+                    "server name": report["server name"],
+                    "respond time": report["respond time"],
+                    "report": report["protocol"]
+                }
+                for protocol, ports in report["protocol"].items():
+                    for port, status in ports.items():
+                        if status == "NOT OK":
+                            if report["client address"] not in final_report["problems"].keys():
+                                final_report["problems"][report["client address"]] = {}
+                            if report["server address"] not in final_report["problems"][report["client address"]].keys():
+                                final_report["problems"][report["client address"]][report["server address"]] = {}
+                            if protocol not in final_report["problems"][report["client address"]][report["server address"]].keys():
+                                final_report["problems"][report["client address"]][report["server address"]][protocol] = {}
+                            final_report["problems"][report["client address"]][report["server address"]][protocol][port] = status
+    return final_report
+
+
 
 # Настройка логгера для сервера
 loggerS = logging.getLogger("Server_Side")
@@ -325,6 +367,14 @@ class clientThread(threading.Thread):
                     loggerCl.error(f"Connection with {self.server_ip} TCP {self.server_main_port} wasn\'t settled")
                     serversStatusDic["status"] = "NOT OK"
                     serversStatusDic[self.server_ip] = "DOWN"
+                    if len(self.server_checkList) == 1:
+                        finalReports[self.conn_id] = {
+                                "client address": hostAddress,
+                                "client name": hostName,
+                                "status": "NOT OK",
+                                "problem": "NO ACCESS TO ALL SERVERS",
+                                "report": serversStatusDic
+                            }
                 else:
                     loggerCl.error(f"Timeout/Connection problems with {self.server_ip} TCP {self.server_main_port} while {flag} operation")
                 return
@@ -822,10 +872,8 @@ if __name__ == "__main__":
 
         print("final reports:", finalReports)
         print("final reports from servers:", finalServerReports)
-
-        # создадим бд и присоеденимся к ней чтобы работать через cursor
-
-
+        if serversStatusDic["status"] == "OK":
+            print(form_final_reort(finalReports, {}))
         print("FIN")
 
     elif sys.argv[1] == "srv":
