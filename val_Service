@@ -98,6 +98,9 @@ def form_final_reort(client_reports, server_reports):
                     if protocol not in final_report["problems"][report["client address"]][report["server address"]].keys():
                         final_report["problems"][report["client address"]][report["server address"]][protocol] = {}
                     final_report["problems"][report["client address"]][report["server address"]][protocol][port] = status
+    if not server_reports:
+        return final_report
+
 
     for id1, id2_dic in server_reports.items():
         for id2, report in id2_dic.items():
@@ -119,9 +122,19 @@ def form_final_reort(client_reports, server_reports):
                             if protocol not in final_report["problems"][report["client address"]][report["server address"]].keys():
                                 final_report["problems"][report["client address"]][report["server address"]][protocol] = {}
                             final_report["problems"][report["client address"]][report["server address"]][protocol][port] = status
+            elif report["status"] == "NOT OK":
+                final_report[report["client address"]] = {
+                    "problem": report["problem"],
+                    "report": report["report"]
+                }
+                final_report["problems"][report["client address"]] = {
+                    "problem": report["problem"],
+                    "report": {}
+                }
+                for ip, value in report["report"].items():
+                        if ip != "status" and value == "DOWN":
+                            final_report["problems"][report["client address"]]["report"][ip] = value
     return final_report
-
-
 
 # Настройка логгера для сервера
 loggerS = logging.getLogger("Server_Side")
