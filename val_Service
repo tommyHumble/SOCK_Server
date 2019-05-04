@@ -23,12 +23,6 @@ def get_ip():
 # ip клиента/сервера
 hostAddress = get_ip()
 
-def num_ports(dic):
-    res = 0
-    for i in dic:
-        res += len(dic[i])
-    return res
-
 # Имя машины
 hostName = socket.gethostname()
 hostName = hostName.strip()
@@ -44,7 +38,9 @@ mainServerReports = {}
 finalReports = {}
 
 # Контрольный словарь. Если хоть 1 сервер не поднят, то нет смысла делать что-либо дальше (client)
-serversStatusDic = {"status": "OK"}
+serversStatusDic = {}
+
+serverPortsStatusDic = {}
 
 # Итоговые отчеты от опрашиваемых серверов (client)
 finalServerReports = {}
@@ -166,7 +162,7 @@ loggerCl.addHandler(fileHandler)
 
 # Поток, в котором запускается соединение с S по 3242
 class clientThread(threading.Thread):
-    def __init__(self, server_ip, server_port, port_checkList, server_checkList, *args):
+    def __init__(self, server_ip, server_port, port_checkList, server_checkList, id_statusDic, *args):
         self.server_ip = server_ip
         self.server_main_port = server_port
         # список портов, которые нужно будет передать серверу для активации
@@ -175,6 +171,7 @@ class clientThread(threading.Thread):
         self.server_checkList = server_checkList
         self.adds = args
         self.conn_id = str(uuid.uuid4())
+        self.id_statusDic = id_statusDic
         threading.Thread.__init__(self)
 
     def run(self):
@@ -222,24 +219,23 @@ class clientThread(threading.Thread):
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "mainRespond":
-                    serversStatusDic[self.server_ip] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
+                    serversStatusDic[self.id_statusDic][self.server_ip] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
                     loggerCl.debug(f"mainRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     mainClientReports[self.conn_id]["server respond time"] = recvTime - sendallTime
                 else:
-                    serversStatusDic[self.server_ip] = "DOWN"
+                    serversStatusDic[self.id_statusDic][self.server_ip] = "DOWN"
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received successfully. Expected mainRespond.")
-                    serversStatusDic["status"] = "NOT OK"
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! нужно очищать statusdic#
+                    serversStatusDic[self.id_statusDic]["status"] = "NOT OK"
                 while True:
-                    if len(self.server_checkList)+1 == len(serversStatusDic):
-                        if serversStatusDic["status"] == "NOT OK":
+                    if len(self.server_checkList)+1 == len(serversStatusDic[self.id_statusDic]):
+                        if serversStatusDic[self.id_statusDic]["status"] == "NOT OK":
                             loggerCl.error(f"Not all servers are working on TCP {self.server_main_port}")
                             finalReports[self.conn_id] = {
                                 "client address": hostAddress,
                                 "client name": hostName,
                                 "status": "NOT OK",
                                 "problem": "NO ACCESS TO ALL SERVERS",
-                                "report": serversStatusDic
+                                "report": serversStatusDic[self.id_statusDic]
                             }
                             del mainClientReports[self.conn_id]
                             return
@@ -280,6 +276,7 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
                 msg = rcv.decode()
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                print("This activePortListRespond i received but didnt make python object:", msg)
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "activePortListRespond":
@@ -290,15 +287,29 @@ class clientThread(threading.Thread):
                                 "client name": hostName,
                                 "server address": self.server_ip,
                                 "server name": pyMsg["server name"],
+                                "respond time": recvTime - sendallTime,
                                 "status": "NOT OK",
                                 "problem": "NOT ALL PORTS ON SERVER WERE ACTIVATED",
-                                "report": serversStatusDic
+                                "report": serversStatusDic[self.id_statusDic]
                             }
+                        serverPortsStatusDic[self.id_statusDic]["status"] = "NOT OK"
+                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = "NOT ALL PORTS WERE ACTIVATED"
+                        del mainClientReports[self.conn_id]
                         loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
                         return
+                    else:
+                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = "ALL PORTS WERE ACTIVATED"
+                        loggerCl.debug(f"All ports on {self.server_ip} were activated successfully")
                 else:
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected activePortListRespond")
-
+                while True:
+                    if len(self.server_checkList)+1 == len(serverPortsStatusDic[self.id_statusDic]):
+                        if serverPortsStatusDic[self.id_statusDic]["status"] == "OK":
+                            loggerCl.info("All servers activated all ports")
+                            break
+                        else:
+                            loggerCl.error("Not all servers activated all ports")
+                            return
                 # список потоков в которых клиент опрашивает UDP TCP порты
                 threadList = []
                 for protocol, ports in self.port_checkList.items():
@@ -391,15 +402,15 @@ class clientThread(threading.Thread):
             except (ConnectionError, socket.timeout):
                 if flag == "main connection":
                     loggerCl.error(f"Connection with {self.server_ip} TCP {self.server_main_port} wasn\'t settled")
-                    serversStatusDic["status"] = "NOT OK"
-                    serversStatusDic[self.server_ip] = "DOWN"
+                    serversStatusDic[self.id_statusDic]["status"] = "NOT OK"
+                    serversStatusDic[self.id_statusDic][self.server_ip] = "DOWN"
                     if len(self.server_checkList) == 1:
                         finalReports[self.conn_id] = {
                                 "client address": hostAddress,
                                 "client name": hostName,
                                 "status": "NOT OK",
                                 "problem": "NO ACCESS TO ALL SERVERS",
-                                "report": serversStatusDic
+                                "report": serversStatusDic[self.id_statusDic]
                             }
                 else:
                     loggerCl.error(f"Timeout/Connection problems with {self.server_ip} TCP {self.server_main_port} while {flag} operation")
@@ -416,7 +427,6 @@ class clientThread(threading.Thread):
             except InterruptedError:
                 loggerCl.warning(f"{flag} operations with {self.server_ip} TCP {self.server_main_port} was interrupted")
                 return
-
 
 
 
@@ -597,10 +607,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     continue
 
                 elif pyMsg["type"] == "reportRequest":
-                    #time.sleep(0.5)
-                    while True:
-                        if ports_num == serverPersonalReports[conn_id]["num of ports"]:
-                            break
+                    time.sleep(0.5)
                     loggerS.debug(f"reportRequest was recieved from {client_ip} on main TCP {local_port}")
                     flag = "sendall repportRespond"
                     reportRespond = json.dumps(serverPersonalReports[conn_id])
@@ -615,30 +622,27 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     checkList = []
                     idList = []
                     #finalReports[conn_id] = {}
+                    id_statusDic = str(uuid.uuid4())
+                    serversStatusDic[id_statusDic] = {"status": "OK"}
+                    serverPortsStatusDic[id_statusDic] = {"status": "OK"}
                     for server in pyMsg["server list"]:
-                        thread = clientThread(server["ip"], local_port, server["ports"], pyMsg["server list"])
+                        thread = clientThread(server["ip"], local_port, server["ports"], pyMsg["server list"], id_statusDic)
                         idList.append(thread.conn_id)
                         checkList.append(thread)
                         thread.start()
                     for server in checkList:
                         if server.isAlive():
                             server.join()
+                    del serversStatusDic[id_statusDic]
+                    del serverPortsStatusDic[id_statusDic]
                     # for id in mainServerReports.keys():
                     #     finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
-                    print("before forming reports")
-                    print("mainServerReports:", mainServerReports)
-                    print("mainClientReports:", mainClientReports)
-                    print("finalReports:", finalReports)
                     for id in idList:
                         if id in mainServerReports.keys():
                             finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                             del mainServerReports[id]
                         if id in mainClientReports.keys():
                             del mainClientReports[id]
-                        print("1 reports was formed")
-                        print("mainServerReports:", mainServerReports)
-                        print("mainClientReports:", mainClientReports)
-                        print("finalReports:", finalReports)
 
                     mainfinalReports = {}
                     for id in idList:
@@ -670,7 +674,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     break
 
                 elif pyMsg["type"] == "portList":
-                    ports_num = num_ports(pyMsg["ports"])
                     loggerS.debug(f"portList was received from {client_ip} main TCP {local_port} successfully")
                     flag = "sendall portListResp"
                     portListRespond = {
@@ -691,7 +694,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                       "server name": hostName,
                       "connection id": conn_id,
                       "message": "REPORT",
-                      "num of ports": 0,
                       "report": {
                           "protocol": {
                               "TCP": {},
@@ -711,13 +713,30 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                   "server address": hostAddress,
                   "server name": hostName,
                   "connection id": conn_id,
-                  "message": "OK"
+                  "message": "OK",
+                  "problems": {
+                      "UDP": {},
+                      "TCP": {}
+                  }
                 }
                 for protocol, ports in pyMsg["ports"].items():
                     for port in ports:
                         if (port, protocol) in serveingPorts.keys():
-                            loggerS.debug(f"{protocol} server on {port} is already launched")
-                            serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "OK", "recv": "NOT OK", "send": "NOT OK"}
+                            if serveingPorts[port, protocol].isAlive():
+                                loggerS.debug(f"{protocol} server on {port} is already launched")
+                                serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "OK", "recv": "NOT OK", "send": "NOT OK"}
+                            else:
+                                serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
+                                try:
+                                    serveingPorts[port, protocol].start()
+                                    loggerS.error(f"{protocol} {port} was activated again")
+                                    serverPersonalReports[conn_id]["report"]["protocol"][protocol][port]["serve_forever"] =  "OK"
+                                except:
+                                    activePortListRespond["message"] = "NOT OK"
+                                    activePortListRespond["problems"][protocol][port] = "NOT OK"
+                                    loggerS.error(f"Didn\'t manage to reactivate server on {protocol} {port}")
+                                    serveingPorts[port, protocol].stop_server()
+                                    del serveingPorts[port, protocol]
                         else:
                             thread = portThread(port, protocol, conn_id)
                             thread.start()
@@ -725,13 +744,15 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                                 serveingPorts[port, protocol] = thread
                             else:
                                 activePortListRespond["message"] = "NOT OK"
+                                activePortListRespond["problems"][protocol][port] = "NOT OK"
 
                 if activePortListRespond["message"] == "NOT OK":
                     loggerS.error("Didn\'t manage to activate servers on all ports")
                     #del serverPersonalReports[conn_id]
-                    break
+                    #break
 
                 activePortListRespond = json.dumps(activePortListRespond)
+                print("THis activePortsListRespond I will send:", activePortListRespond)
                 loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                 self.request.sendall(bytes(activePortListRespond, encoding='utf-8'))
                 loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was sent successfully")
@@ -782,9 +803,17 @@ class portThread(threading.Thread):
             loggerS.error(f"couldn\'t launche serve_forever SocketServer on {hostAddress} {self.protocol} {self.port}")
 
     def stop_server(self):
-        self.server.shutdown()
-        self.server.server_close()
-        loggerS.debug(f"{hostAddress} {self.protocol} {self.port} server was shutdown")
+        try:
+            self.server.shutdown()
+            loggerS.debug(f"{hostAddress} {self.protocol} {self.port} server was shutdown")
+        except:
+            pass
+        try:
+            self.server.server_close()
+            loggerS.debug(f"{hostAddress} {self.protocol} {self.port} socket was closed")
+        except:
+            pass
+
 
 class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -818,7 +847,6 @@ class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
             simpleRespond = json.dumps(simpleRespond)
             loggerS.debug(f"simpleRespond {client_ip} TCP {local_port} was decoded in json string successfully")
             self.request.sendall(bytes(simpleRespond, encoding='utf-8'))
-            print(f"server personal reports TCP {local_port} before send:", serverPersonalReports)
             serverPersonalReports[pyMsg["connection id"]]["report"]["protocol"]["TCP"][local_port]["send"] = "OK"
             loggerS.debug(f"simpleRespond was sent to {client_ip} TCP {local_port}")
         except UnicodeDecodeError:
@@ -827,8 +855,8 @@ class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
             loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} message wasn\'t decoded in other format")
         except (ConnectionError, InterruptedError):
             loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} connection was lost")
-        finally:
-            serverPersonalReports[pyMsg["connection id"]]["num of ports"] += 1
+
+
 
 
 class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
@@ -876,8 +904,7 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
             loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} message wasn\'t decoded in other format")
         except (ConnectionError, InterruptedError):
             loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} connection was lost")
-        finally:
-            serverPersonalReports[pyMsg["connection id"]]["num of ports"] += 1
+
 
 
 
@@ -895,21 +922,28 @@ if __name__ == "__main__":
                 with open(serverListFileName, 'r') as f_r:
                     serversList = json.load(f_r)
                     checkList = []
+                    id_statusDic = str(uuid.uuid4())
+                    serversStatusDic[id_statusDic] = {"status": "OK"}
+                    serverPortsStatusDic[id_statusDic] = {"status": "OK"}
                     for server in serversList:
-                        thread = clientThread(server["ip"], 3242, server["ports"], serversList, "main")
+                        thread = clientThread(server["ip"], 3242, server["ports"], serversList, id_statusDic, "main")
                         checkList.append(thread)
                         thread.start()
                     for server in checkList:
                         if server.isAlive():
                             server.join()
-                    if serversStatusDic["status"] == "OK":
-                        print("All servers are UP:", serversStatusDic)
+                    if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                        print("All servers are UP and ready:", serversStatusDic[id_statusDic])
                         # Формируем общие отчеты
                         for id in mainClientReports.keys():
                             finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                             print("final rep:", finalReports[id])
                     else:
-                        print("Not all servers are UP:", serversStatusDic)
+                        print("Not all servers are UP:", serversStatusDic[id_statusDic])
+                    if serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                        print("All servers activated all ports:", serverPortsStatusDic[id_statusDic])
+                    else:
+                        print("Not all servers activated ports", serverPortsStatusDic[id_statusDic])
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
@@ -917,8 +951,9 @@ if __name__ == "__main__":
 
         print("final reports:", finalReports)
         print("final reports from servers:", finalServerReports)
-        if serversStatusDic["status"] == "OK":
+        if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
             print(form_final_reort(finalReports, finalServerReports))
+        #del serversStatusDic[id_statusDic]
         print("FIN")
 
     elif sys.argv[1] == "srv":
@@ -939,7 +974,11 @@ if __name__ == "__main__":
                     print("reports for sending:", finalReports)
                     print("server reports:", mainServerReports)
                     print("client reports:", mainClientReports)
+                    print("status dic:", serversStatusDic)
             except KeyboardInterrupt:
+                # for server in serveingPorts.values():
+                #     server.stop_server()
+                #     server.join()
                 mainThread.stop_server()
                 print("Server was stopped")
                 break
