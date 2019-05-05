@@ -25,8 +25,6 @@ hostAddress = get_ip()
 
 # Имя машины
 hostName = socket.gethostname()
-hostName = hostName.strip()
-hostName = str(hostName)
 
 # Клиентские отчеты о состоянии серверов которых мы опросили (client)
 mainClientReports = {}
@@ -290,7 +288,7 @@ class clientThread(threading.Thread):
                                 "respond time": recvTime - sendallTime,
                                 "status": "NOT OK",
                                 "problem": "NOT ALL PORTS ON SERVER WERE ACTIVATED",
-                                "report": serversStatusDic[self.id_statusDic]
+                                "report": serverPortsStatusDic[self.id_statusDic]
                             }
                         serverPortsStatusDic[self.id_statusDic]["status"] = "NOT OK"
                         serverPortsStatusDic[self.id_statusDic][self.server_ip] = "NOT ALL PORTS WERE ACTIVATED"
@@ -714,7 +712,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                   "server name": hostName,
                   "connection id": conn_id,
                   "message": "OK",
-                  "problems": {
+                  "report": {
                       "UDP": {},
                       "TCP": {}
                   }
@@ -725,15 +723,17 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                             if serveingPorts[port, protocol].isAlive():
                                 loggerS.debug(f"{protocol} server on {port} is already launched")
                                 serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "OK", "recv": "NOT OK", "send": "NOT OK"}
+                                activePortListRespond["report"][protocol][port] = "OK"
                             else:
                                 serverPersonalReports[conn_id]["report"]["protocol"][protocol][port] = {"sockServ creation": "OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
                                 try:
                                     serveingPorts[port, protocol].start()
                                     loggerS.error(f"{protocol} {port} was activated again")
                                     serverPersonalReports[conn_id]["report"]["protocol"][protocol][port]["serve_forever"] =  "OK"
+                                    activePortListRespond["report"][protocol][port] = "OK"
                                 except:
                                     activePortListRespond["message"] = "NOT OK"
-                                    activePortListRespond["problems"][protocol][port] = "NOT OK"
+                                    activePortListRespond["report"][protocol][port] = "NOT OK"
                                     loggerS.error(f"Didn\'t manage to reactivate server on {protocol} {port}")
                                     serveingPorts[port, protocol].stop_server()
                                     del serveingPorts[port, protocol]
@@ -742,9 +742,10 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                             thread.start()
                             if thread.isAlive():
                                 serveingPorts[port, protocol] = thread
+                                activePortListRespond["report"][protocol][port] = "OK"
                             else:
                                 activePortListRespond["message"] = "NOT OK"
-                                activePortListRespond["problems"][protocol][port] = "NOT OK"
+                                activePortListRespond["report"][protocol][port] = "NOT OK"
 
                 if activePortListRespond["message"] == "NOT OK":
                     loggerS.error("Didn\'t manage to activate servers on all ports")
@@ -932,18 +933,36 @@ if __name__ == "__main__":
                     for server in checkList:
                         if server.isAlive():
                             server.join()
-                    if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                    if serversStatusDic[id_statusDic]["status"] == "OK":
                         print("All servers are UP and ready:", serversStatusDic[id_statusDic])
-                        # Формируем общие отчеты
-                        for id in mainClientReports.keys():
-                            finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
-                            print("final rep:", finalReports[id])
+
+
+                        if serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                            print("All servers activated ports", serverPortsStatusDic[id_statusDic])
+                            for id in mainClientReports.keys():
+                                finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                                print("final rep:", finalReports[id])
+                        else:
+                            print("Not all servers activated ports")
+
+
                     else:
                         print("Not all servers are UP:", serversStatusDic[id_statusDic])
-                    if serverPortsStatusDic[id_statusDic]["status"] == "OK":
-                        print("All servers activated all ports:", serverPortsStatusDic[id_statusDic])
-                    else:
-                        print("Not all servers activated ports", serverPortsStatusDic[id_statusDic])
+                        conn = sqlite3.connect("reports.db") # или :memory: чтобы сохранить в RAM
+                        cursor = conn.cursor()
+
+                        # Создание таблицы
+                        cursor.execute("""DROP TABLE IF EXISTS Servers""")
+                        cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
+                                          (ip_address text, status text)""")
+                        # Вставляем данные в таблицу
+                        for key, value in serversStatusDic[id_statusDic].items():
+                            if key != "status":
+                                cursor.execute(f"""INSERT INTO Servers
+                                                  VALUES (?, ?)""", [key, value])
+                                # Сохраняем изменения
+                                conn.commit()
+
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
@@ -975,6 +994,7 @@ if __name__ == "__main__":
                     print("server reports:", mainServerReports)
                     print("client reports:", mainClientReports)
                     print("status dic:", serversStatusDic)
+                    print("port status dic", serverPortsStatusDic)
             except KeyboardInterrupt:
                 # for server in serveingPorts.values():
                 #     server.stop_server()
