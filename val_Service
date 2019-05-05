@@ -25,6 +25,7 @@ hostAddress = get_ip()
 
 # Имя машины
 hostName = socket.gethostname()
+hostName = str(hostName.strip())
 
 # Клиентские отчеты о состоянии серверов которых мы опросили (client)
 mainClientReports = {}
@@ -684,6 +685,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     }
                     portListRespond = json.dumps(portListRespond)
                     self.request.sendall(bytes(portListRespond, encoding='utf-8'))
+                    print(f"This portlistrespond i will send to {self.client_address}", portListRespond)
                     loggerS.debug(f"portListRespond was sent to {self.client_address[0]} successfully")
                     serverPersonalReports[conn_id] = {
                       "type": "reportRespond",
