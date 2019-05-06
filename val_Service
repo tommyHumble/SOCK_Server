@@ -1,4 +1,14 @@
 
+"""
+Cервис валидации готовности инфраструктуры заказчика.
+Данынй сервис работает на основе 'Клиент-сервер'. Он проверяет доступность портов между серверами,
+формирует отчет и отправляет его в БД SQLite
+"""
+
+__version__ = 1.0
+__author__ = "tommyHumble"
+
+
 import socketserver
 import json
 import threading
@@ -9,7 +19,16 @@ import sys
 import uuid
 import sqlite3
 
+
+
 def get_ip():
+    """
+    Данная ф-ция позволяет определить ip адрес интерфейса,
+    через который устройство устанавливает связь по сети Интернет.
+    Доступ в сеть Интернет не обязателен.
+
+    :return: ip address (type - str)
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('10.255.255.255', 1))
@@ -23,35 +42,43 @@ def get_ip():
 # ip клиента/сервера
 hostAddress = get_ip()
 
-# Имя машины
+# Имя устройства
 hostName = socket.gethostname()
 hostName = str(hostName.strip())
 
-# Клиентские отчеты о состоянии серверов которых мы опросили (client)
+# Словарь отчетов о состоянии серверов, которых мы опросили, составленные на стороне клиента
 mainClientReports = {}
 
-# Серверные отчеты о состоянии сервера который был опрошен (client)
+# Словарь отчетов о состоянии серверов, которых мы опросили, составленные на стороне сервера
 mainServerReports = {}
 
-# Итоговые отчеты (client)
+# Словарь отчетов о состоянии серверов, которых мы опросили, составленные на основании 2-ух предыдущих отчетов
 finalReports = {}
 
-# Контрольный словарь. Если хоть 1 сервер не поднят, то нет смысла делать что-либо дальше (client)
+# Словарь состояния главного порта TCP 3242 на опрашиваемых серверах
 serversStatusDic = {}
 
+# Словарь состояния портов на сервере, которые он поднял для проверки, по запросу клиента
 serverPortsStatusDic = {}
 
-# Итоговые отчеты от опрашиваемых серверов (client)
+# Отчеты серверов, которые произвели валидацию в качестве клиента
 finalServerReports = {}
 
-# Отчеты сервера, которые он отправляет клиенту, о их взаимодействии (server)
+# Словарь отчетов о состоянии серверов, которые будут отправлены клиенту на сравнение
 serverPersonalReports = {}
 
-# Словарь сокет-серверов, которые уже запущены на сервере и их не нужно перезапускать (port, protocol)(server)
+# Словарь сокетов, которые были запущены на сервере для проверки
 serveingPorts = {}
 
-# Ф-ция, которая формирует итоговый отчет на основе клиентского и серверных отчетов
 def form_report(cl, srv):
+    """
+    Данная ф-ция формирует итоговый отчет на основании двух отчетов -
+    со стороны сервера и со стороны клиента.
+
+    :param cl: Отчет со стороны клиента из mainClientReports
+    :param srv: Отчет со стороны сервера из mainServertReports
+    :return: итоговый отчет (type - dict)
+    """
     report = {}
     report["client address"] = hostAddress
     report["client name"] = hostName
@@ -79,7 +106,14 @@ def form_report(cl, srv):
                 report["protocol"]["UDP"][port] = "NOT OK"
     return report
 
-def form_final_reort(client_reports, server_reports):
+def form_final_report(client_reports, server_reports):
+    """
+    Данная ф-ция формирует итоговый отчет о всей проделанной работе сервиса.
+
+    :param client_reports: Итоговые отчеты клиента из finalReports
+    :param server_reports: Итоговые отчеты серверов, о проделанной работе в качестве клиента из finalServerReports
+    :return: Итоговый отчет (type - dict)
+    """
     final_report = {"problems": {}}
     for id, report in client_reports.items():
         if report["client address"] not in final_report.keys():
@@ -101,7 +135,6 @@ def form_final_reort(client_reports, server_reports):
                     final_report["problems"][report["client address"]][report["server address"]][protocol][port] = status
     if not server_reports:
         return final_report
-
 
     for id1, id2_dic in server_reports.items():
         for id2, report in id2_dic.items():
@@ -139,7 +172,7 @@ def form_final_reort(client_reports, server_reports):
 
 
 
-# Настройка логгера для сервера
+# Настройка логирования на стороне сервера
 loggerS = logging.getLogger("Server_Side")
 loggerS.setLevel(logging.DEBUG)
 fileHandler = logging.FileHandler("server_logs.log", mode="w")
@@ -147,7 +180,7 @@ fileFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(me
 fileHandler.setFormatter(fileFormatter)
 loggerS.addHandler(fileHandler)
 
-# Настройка логгера для клиента
+# Настройка логирования на стороне клиента
 loggerCl = logging.getLogger("Client_Side")
 loggerCl.setLevel(logging.DEBUG)
 fileHandler = logging.FileHandler("client_logs.log", mode="w")
@@ -156,17 +189,25 @@ fileHandler.setFormatter(fileFormatter)
 loggerCl.addHandler(fileHandler)
 
 
-                                            ################ C L I E N T _ S I D E ###############
-
-
-# Поток, в котором запускается соединение с S по 3242
 class clientThread(threading.Thread):
+    """
+    Экземпляром данного класса является поток, который устанавливает
+    соединение клиента с сервером через порт TCP 3242
+    """
     def __init__(self, server_ip, server_port, port_checkList, server_checkList, id_statusDic, *args):
+        """
+        При создании экземпляра класса необходимо передать ему следующие параметры:
+
+        :param server_ip: ip адрес сервера, с которым собираемся установить соединение
+        :param server_port: порт по которому мы собираемся установить соеинение с сервером
+        :param port_checkList: список портов, которые мы передадим серверу, и которые сервер должен будет активировать
+        :param server_checkList: список всех серверов, которые необходимо проверить
+        :param id_statusDic: уникальный иднетификатор, позволяющий инициализировать данное соединение (сессию)
+        :param args: список дополнительных аргументов. Не пуст, когда создается поток на главном клиенте
+        """
         self.server_ip = server_ip
         self.server_main_port = server_port
-        # список портов, которые нужно будет передать серверу для активации
         self.port_checkList = port_checkList
-        # список всех серваков которые нужно проверить
         self.server_checkList = server_checkList
         self.adds = args
         self.conn_id = str(uuid.uuid4())
@@ -174,10 +215,12 @@ class clientThread(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
+        """
+        Выполнение соединения с сервером TCP 3242
+        """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(4)
-            #conn_id = str(uuid.uuid4())
             try:
+                sock.settimeout(4)
                 flag = "main connection"
                 sock.connect((self.server_ip, self.server_main_port))
                 loggerCl.debug(f"Connection with {self.server_ip} TCP {self.server_main_port} was settled successfully")
@@ -218,7 +261,8 @@ class clientThread(threading.Thread):
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "mainRespond":
-                    serversStatusDic[self.id_statusDic][self.server_ip] = "UP"                       # По получении ответа Добавляем в контрольный список инфу, что на этом хосте порт 3242 работает четко
+                    sock.settimeout(4) #######???######
+                    serversStatusDic[self.id_statusDic][self.server_ip] = "UP"
                     loggerCl.debug(f"mainRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     mainClientReports[self.conn_id]["server respond time"] = recvTime - sendallTime
                 else:
@@ -239,7 +283,6 @@ class clientThread(threading.Thread):
                             del mainClientReports[self.conn_id]
                             return
                         else:
-                            #finalReports[self.conn_id] = {"status": "ALL SERVERS GAVE US RESPONDS"}
                             loggerCl.info(f"All servers are UP on TCP {self.server_main_port}")
                             break
 
@@ -275,7 +318,6 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
                 msg = rcv.decode()
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
-                print("This activePortListRespond i received but didnt make python object:", msg)
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "activePortListRespond":
@@ -301,6 +343,7 @@ class clientThread(threading.Thread):
                         loggerCl.debug(f"All ports on {self.server_ip} were activated successfully")
                 else:
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected activePortListRespond")
+                    return
                 while True:
                     if len(self.server_checkList)+1 == len(serverPortsStatusDic[self.id_statusDic]):
                         if serverPortsStatusDic[self.id_statusDic]["status"] == "OK":
@@ -345,22 +388,19 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
                 if pyMsg["type"] == "reportRespond":
                     loggerCl.debug(f"reportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
-                    print(f"clientReport of {self.server_ip}", mainClientReports[self.conn_id])
                     mainServerReports[self.conn_id] = pyMsg
-                    print(f"reportRespond from {self.server_ip}", mainServerReports[self.conn_id])
                 else:
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected reportRespond")
                     return
 
                 if self.adds:
-                    # дублируем список серверов на проверку, но без дублирования сервера, на который его отправляем
                     sock.settimeout(6)
                     serverList = []
                     for server in self.server_checkList:
                         if server["ip"] != self.server_ip:
                             serverList.append(server)
                     if not serverList:
-                        print("There is only one server to check. No need for serverReports")
+                        #print("There is only one server to check. No need for serverReports")
                         return
                     flag = "sendall serverReportRequest"
                     serverReportRequest = {
@@ -391,7 +431,6 @@ class clientThread(threading.Thread):
                     pyMsg = json.loads(msg)
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
                     if pyMsg["type"] == "serverReportRespond":
-                        print("serverReportRespond from", self.server_ip, pyMsg)
                         loggerCl.debug(f"serverReportRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                         finalServerReports[self.conn_id] = pyMsg["report"]
                     else:
@@ -613,7 +652,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     loggerS.debug(f"reportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                     self.request.sendall(bytes(reportRespond, encoding='utf-8'))
                     loggerS.debug(f"reportRespond was sent to {client_ip} from main TCP {local_port}")
-                    #del serverPersonalReports[conn_id]
                     continue
 
                 elif pyMsg["type"] == "serverReportRequest":
@@ -657,20 +695,13 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                       "report": mainfinalReports
                     }
                     serverReportRespond = json.dumps(serverReportRespond)
-                    print(f"this json string report I will send to {client_ip}:", serverReportRespond)
                     loggerS.debug(f"serverReportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                     self.request.sendall(bytes(serverReportRespond, encoding='utf-8'))
                     loggerS.debug(f"serverReportRespond was sent to {client_ip} from main TCP {local_port}")
                     for id in idList:
                         if id in finalReports.keys():
                             del finalReports[id]
-                    print("all reports were deleted")
-                    print("mainServerReports:", mainServerReports)
-                    print("mainClientReports:", mainClientReports)
-                    print("finalReports:", finalReports)
-                    print("status dic:", serversStatusDic)
                     continue
-                    break
 
                 elif pyMsg["type"] == "portList":
                     loggerS.debug(f"portList was received from {client_ip} main TCP {local_port} successfully")
@@ -685,7 +716,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     }
                     portListRespond = json.dumps(portListRespond)
                     self.request.sendall(bytes(portListRespond, encoding='utf-8'))
-                    print(f"This portlistrespond i will send to {self.client_address}", portListRespond)
                     loggerS.debug(f"portListRespond was sent to {self.client_address[0]} successfully")
                     serverPersonalReports[conn_id] = {
                       "type": "reportRespond",
@@ -701,7 +731,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                           }
                       }
                     }
-                    print(f"server personal reports fresh formed {conn_id}", serverPersonalReports)
                 else:
                     loggerS.warning(f"Unknown message was received from {client_ip}. Connection on TCP {local_port} was stopped.")
                     break
@@ -755,7 +784,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     #break
 
                 activePortListRespond = json.dumps(activePortListRespond)
-                print("THis activePortsListRespond I will send:", activePortListRespond)
                 loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                 self.request.sendall(bytes(activePortListRespond, encoding='utf-8'))
                 loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was sent successfully")
@@ -875,7 +903,6 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
             socket = self.request[1]
             pyMsg = json.loads(msg)
             loggerS.debug(f"Message from {client_ip} UDP {local_port} was decoded in python object successfully")
-            print(f"received pyMsg on UDP {local_port}:", pyMsg)
             if pyMsg["type"] == "simpleRequest":
                 loggerS.debug(f"simpleRequest from {client_ip} UDP {local_port} was received successfully")
                 conn_id = pyMsg["connection id"]
@@ -898,7 +925,6 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
             simpleRespond = json.dumps(simpleRespond)
             loggerS.debug(f"simpleRespond for {client_ip} UDP {local_port} was decoded in json string successfully")
             socket.sendto(bytes(simpleRespond, encoding='utf-8'), self.client_address)
-            print(f"server personal reports UDP {local_port} before send:", serverPersonalReports)
             serverPersonalReports[conn_id]["report"]["protocol"]["UDP"][local_port]["send"] = "OK"
             loggerS.debug(f"simpleRespond for {client_ip} UDP {local_port} was sent successfully")
         except UnicodeDecodeError:
@@ -936,46 +962,54 @@ if __name__ == "__main__":
                         if server.isAlive():
                             server.join()
                     if serversStatusDic[id_statusDic]["status"] == "OK":
-                        print("All servers are UP and ready:", serversStatusDic[id_statusDic])
-
-
-                        if serverPortsStatusDic[id_statusDic]["status"] == "OK":
-                            print("All servers activated ports", serverPortsStatusDic[id_statusDic])
-                            for id in mainClientReports.keys():
-                                finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
-                                print("final rep:", finalReports[id])
-                        else:
-                            print("Not all servers activated ports")
-
-
-                    else:
-                        print("Not all servers are UP:", serversStatusDic[id_statusDic])
-                        conn = sqlite3.connect("reports.db") # или :memory: чтобы сохранить в RAM
+                        print("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                        conn = sqlite3.connect("reports.db")
                         cursor = conn.cursor()
-
-                        # Создание таблицы
                         cursor.execute("""DROP TABLE IF EXISTS Servers""")
                         cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
                                           (ip_address text, status text)""")
-                        # Вставляем данные в таблицу
                         for key, value in serversStatusDic[id_statusDic].items():
                             if key != "status":
                                 cursor.execute(f"""INSERT INTO Servers
                                                   VALUES (?, ?)""", [key, value])
-                                # Сохраняем изменения
+                                conn.commit()
+
+                        if serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                            print("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
+                            for id in mainClientReports.keys():
+                                finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                        else:
+                            print("Not all servers activated ports")
+                            cursor.execute("""DROP TABLE IF EXISTS Servers_ports""")
+                            cursor.execute("""CREATE TABLE IF NOT EXISTS Servers_ports
+                                              (ip_address text, UP text, DOWN text)""")
+                            for key, value in serversStatusDic[id_statusDic].items():
+                                if key != "status":
+                                    cursor.execute(f"""INSERT INTO Servers
+                                                      VALUES (?, ?)""", [key, value])
+                                    conn.commit()
+
+
+                    else:
+                        print("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                        conn = sqlite3.connect("reports.db")
+                        cursor = conn.cursor()
+                        cursor.execute("""DROP TABLE IF EXISTS Servers""")
+                        cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
+                                          (ip_address text, status text)""")
+                        for key, value in serversStatusDic[id_statusDic].items():
+                            if key != "status":
+                                cursor.execute(f"""INSERT INTO Servers
+                                                  VALUES (?, ?)""", [key, value])
                                 conn.commit()
 
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
             print("Unknown arguments were given")
-
-        print("final reports:", finalReports)
-        print("final reports from servers:", finalServerReports)
         if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
-            print(form_final_reort(finalReports, finalServerReports))
-        #del serversStatusDic[id_statusDic]
-        print("FIN")
+            print("Main report:", form_final_report(finalReports, finalServerReports))
+        print("Validation was completed")
 
     elif sys.argv[1] == "srv":
         mainThread = mainServerThread(hostAddress, 3242)
@@ -987,16 +1021,12 @@ if __name__ == "__main__":
                     print("Server can\'t be launched.\nCheck TCP 3242 port.")
                     break
                 else:
-                    # print("Active threads (port servers):", threading.activeCount())
-                    # print(serveingPorts)
-                    # time.sleep(60)
-                    time.sleep(20)
+                    time.sleep(60)
                     print("active threads:", threading.activeCount())
-                    print("reports for sending:", finalReports)
-                    print("server reports:", mainServerReports)
-                    print("client reports:", mainClientReports)
-                    print("status dic:", serversStatusDic)
-                    print("port status dic", serverPortsStatusDic)
+                    for key, value in serveingPorts.items():
+                        if value.isAlive():
+                            print(key)
+
             except KeyboardInterrupt:
                 # for server in serveingPorts.values():
                 #     server.stop_server()
