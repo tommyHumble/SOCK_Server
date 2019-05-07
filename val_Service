@@ -3,10 +3,19 @@
 Cервис валидации готовности инфраструктуры заказчика.
 Данынй сервис работает на основе 'Клиент-сервер'. Он проверяет доступность портов между серверами,
 формирует отчет и отправляет его в БД SQLite
+
+Запуск сервиса в указанном режиме (client/server):
+
+- client: val_Service.py cl serverList.json
+    - cl - атрибут для запуска сервиса в клиентском режиме
+    - serverList.json - файл содержащий необходимую ифнормацию о серверах и портах для проверки
+
+- server: val_Service.py srv
+    - srv - атрибут для запуска сервиса в серверном режиме
 """
 
 __version__ = 1.0
-__author__ = "tommyHumble"
+__author__ = "slava.tomshin.95@mail.ru"
 
 
 import socketserver
@@ -18,7 +27,6 @@ import logging
 import sys
 import uuid
 import sqlite3
-
 
 
 def get_ip():
@@ -171,7 +179,6 @@ def form_final_report(client_reports, server_reports):
     return final_report
 
 
-
 # Настройка логирования на стороне сервера
 loggerS = logging.getLogger("Server_Side")
 loggerS.setLevel(logging.DEBUG)
@@ -196,10 +203,10 @@ class clientThread(threading.Thread):
     """
     def __init__(self, server_ip, server_port, port_checkList, server_checkList, id_statusDic, *args):
         """
-        При создании экземпляра класса необходимо передать ему следующие параметры:
+        При создании экземпляра класса необходимо передать следующие параметры:
 
         :param server_ip: ip адрес сервера, с которым собираемся установить соединение
-        :param server_port: порт по которому мы собираемся установить соеинение с сервером
+        :param server_port: порт с которым мы собираемся установить соеинение на сервером
         :param port_checkList: список портов, которые мы передадим серверу, и которые сервер должен будет активировать
         :param server_checkList: список всех серверов, которые необходимо проверить
         :param id_statusDic: уникальный иднетификатор, позволяющий инициализировать данное соединение (сессию)
@@ -216,7 +223,13 @@ class clientThread(threading.Thread):
 
     def run(self):
         """
-        Выполнение соединения с сервером TCP 3242
+        Выполнение соединения с сервером TCP 3242 и дальнейшая отправка спец. сообщений
+
+        Типы сообщений:
+        - mainRequest - сообщение предназначенное для проверки установленного соединения с сервером через порт TCP 3242
+        - portList - список портов которые серверу необходимо поднять для проверки
+        - reportRequest - клиент запрашивает отчет, составленный на стороне сервера о произведенной проверки во время установленной сессии
+        - serverReportRequest - главный клиент запрашивает отчеты серверов, которые отработали в качестве клиентов
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
@@ -261,7 +274,7 @@ class clientThread(threading.Thread):
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "mainRespond":
-                    sock.settimeout(4) #######???######
+                    sock.settimeout(4)
                     serversStatusDic[self.id_statusDic][self.server_ip] = "UP"
                     loggerCl.debug(f"mainRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     mainClientReports[self.conn_id]["server respond time"] = recvTime - sendallTime
@@ -269,6 +282,7 @@ class clientThread(threading.Thread):
                     serversStatusDic[self.id_statusDic][self.server_ip] = "DOWN"
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received successfully. Expected mainRespond.")
                     serversStatusDic[self.id_statusDic]["status"] = "NOT OK"
+
                 while True:
                     if len(self.server_checkList)+1 == len(serversStatusDic[self.id_statusDic]):
                         if serversStatusDic[self.id_statusDic]["status"] == "NOT OK":
@@ -324,6 +338,8 @@ class clientThread(threading.Thread):
                 if pyMsg["type"] == "activePortListRespond":
                     loggerCl.debug(f"activePortListRespond from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     if pyMsg["message"] == "NOT OK":
+                        serverPortsStatusDic[self.id_statusDic]["status"] = "NOT OK"
+                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = pyMsg["report"]
                         finalReports[self.conn_id] = {
                                 "client address": hostAddress,
                                 "client name": hostName,
@@ -334,17 +350,16 @@ class clientThread(threading.Thread):
                                 "problem": "NOT ALL PORTS ON SERVER WERE ACTIVATED",
                                 "report": serverPortsStatusDic[self.id_statusDic]
                             }
-                        serverPortsStatusDic[self.id_statusDic]["status"] = "NOT OK"
-                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = pyMsg["report"]
                         del mainClientReports[self.conn_id]
                         loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
                         return
                     else:
-                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = "ALL PORTS WERE ACTIVATED"
+                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = pyMsg["report"]
                         loggerCl.debug(f"All ports on {self.server_ip} were activated successfully")
                 else:
                     loggerCl.warning(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected activePortListRespond")
                     return
+
                 while True:
                     if len(self.server_checkList)+1 == len(serverPortsStatusDic[self.id_statusDic]):
                         if serverPortsStatusDic[self.id_statusDic]["status"] == "OK":
@@ -353,7 +368,7 @@ class clientThread(threading.Thread):
                         else:
                             loggerCl.error("Not all servers activated all ports")
                             return
-                # список потоков в которых клиент опрашивает UDP TCP порты
+
                 threadList = []
                 for protocol, ports in self.port_checkList.items():
                     for port in ports:
@@ -400,7 +415,7 @@ class clientThread(threading.Thread):
                         if server["ip"] != self.server_ip:
                             serverList.append(server)
                     if not serverList:
-                        #print("There is only one server to check. No need for serverReports")
+                        # Когда сервер в списке всего один, то ServerReportRespond не нужен
                         return
                     flag = "sendall serverReportRequest"
                     serverReportRequest = {
@@ -418,7 +433,7 @@ class clientThread(threading.Thread):
                     loggerCl.debug(f"serverReportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully")
 
                     flag = "recv serverReportRespond"
-                    #rcv = sock.recv(16284)
+                    # rcv = sock.recv(16284)
                     rcv = b""
                     while True:
                         rcv_part = sock.recv(4096)
@@ -470,7 +485,23 @@ class clientThread(threading.Thread):
 
 
 class portCheckThread(threading.Thread):
+    """
+    Экземпляром данного класса является поток, который устанавливает
+    соединение клиента с портом на сервере, предназначенного для проверки,
+    при помощи спец сообщений
+
+    Тип сообщений:
+    - simpleRequest - сообщение предназначенное для проверки доступа к порту на сервере
+    """
     def __init__(self, server_ip, server_port, protocol, connection_id):
+        """
+        При создании экземпляра класса необходимо передать следующие параметры:
+
+        :param server_ip: ip адрес сервера, с которым собираемся установить соединение
+        :param server_port: порт с которым мы собираемся установить соеинение на сервером
+        :param protocol: протокол по которому будет устанавилваться соединение с сервером (TCP или UDP)
+        :param connection_id: уникальный иднетификатор, инициализирующий сессию внутри которой происходит проверка данного порта
+        """
         self.server_ip = server_ip
         self.server_port = server_port
         self.protocol = protocol
@@ -478,6 +509,10 @@ class portCheckThread(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
+        """
+        Метод запускает поток, который, в зависимости от переданных параметров, устанавливает
+        соединение с соектом на сервере и производит обменн служебными сообщениями
+        """
         if self.protocol == "TCP":
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as prtSock:
                 try:
@@ -577,12 +612,18 @@ class portCheckThread(threading.Thread):
                     loggerCl.error(f"{flag} operations with {self.server_ip} UDP {self.server_port} was interrupted")
 
 
-
-                                        ######################## S E R V E R _ S I D E ##############################
-
-
 class mainServerThread(threading.Thread):
+    """
+    Экземпляром класса является поток, запускающий на стороне сервера сокет-сервер прослушивающий порт TCP 3242,
+    который, в зависимости от переданных ему со стороны клиента спец. сообщений, выполняет различные ф-ции
+    """
     def __init__(self, addr, port):
+        """
+        При создании экземпляра класса необходимо передать следующие параметры:
+
+        :param addr: ip адресс сервера, на котором запускаете сокет-сервер
+        :param port: порт сервера, на котором запускаете сокет-сервер
+        """
         self.addr = addr
         self.port = port
         threading.Thread.__init__(self)
@@ -593,12 +634,18 @@ class mainServerThread(threading.Thread):
             loggerS.warning(f"{self.addr} 'TCP' {self.port} SocketServer wasn\'t created")
 
     def run(self):
+        """
+        Метод запускает сокет-сервер в режиме serve_forever
+        """
         try:
             self.server.serve_forever()
         except:
             loggerS.error(f"SocketServer on port {self.port} serve_forever error ")
 
     def stop_server(self):
+        """
+        Метод останавливает и закрывает сокет-сервер
+        """
         try:
             self.server.shutdown()
             self.server.server_close()
@@ -607,13 +654,36 @@ class mainServerThread(threading.Thread):
             loggerS.warning(f"{self.addr} 'TCP' {self.port} server couldn\'t be closed correctly")
 
 class myTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """
+    Экземпляром данного класса является TCP сокет-сервер на основе socketserver.TCPServer,
+    а также socketserver.ThreadingMixIn для обеспеченияя многопоточной обработки соединений с клиентами
+    """
     pass
 
 class myUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+    """
+    Экземпляром данного класса является UDP сокет-сервер на основе socketserver.UDPServer,
+    а также socketserver.ThreadingMixIn для обеспеченияя многопоточной обработки сообщений от клиентов
+    """
     pass
 
 class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
+    """
+    Экземпляром данного класса является handler сокет-сервера, который выполняет обработку соединений
+    установленных с клиентом через порт TCP 3242
+    """
     def handle(self):
+        """
+        Метод обрабатывающий спец. сообщения переданные клиентом и в зависимости от типа сообщения
+        выполняет ряд установленных операций.
+
+        Типы сообщений:
+        - mainRespond - ответ клиенту на mainRequest, подтверждающий установку соединения по порту TCP 3242
+        - portListRespond - ответ клиенту на portList, подтверждающий получение списка портов, которые необходимо проверить
+        - activePortListRespond - ответ клиенту, в котором сервер подтверждает поднятие всех портов, или уведомляет об ошибках на портах
+        - reportRespond - отчет составленный на стороне сервера о проведенной тестировки портов
+        - serverReportRespond - отчет составленный на стороне сервера, который выступил в роли клиента и произвел проверку доступа сервера к другим серверам
+        """
         client_ip = self.client_address[0]
         local_port = self.request.getsockname()[1]
         loggerS.debug(f"Connection on TCP {local_port} with {client_ip} was settled")
@@ -662,7 +732,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     loggerS.debug(f"serverReportRequest was recieved from {client_ip} on main TCP {local_port}")
                     checkList = []
                     idList = []
-                    #finalReports[conn_id] = {}
                     id_statusDic = str(uuid.uuid4())
                     serversStatusDic[id_statusDic] = {"status": "OK"}
                     serverPortsStatusDic[id_statusDic] = {"status": "OK"}
@@ -676,8 +745,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                             server.join()
                     del serversStatusDic[id_statusDic]
                     del serverPortsStatusDic[id_statusDic]
-                    # for id in mainServerReports.keys():
-                    #     finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                     for id in idList:
                         if id in mainServerReports.keys():
                             finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
@@ -786,8 +853,6 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
 
                 if activePortListRespond["message"] == "NOT OK":
                     loggerS.error("Didn\'t manage to activate servers on all ports")
-                    #del serverPersonalReports[conn_id]
-                    #break
 
                 activePortListRespond = json.dumps(activePortListRespond)
                 loggerS.debug(f"activePortListRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
@@ -811,7 +876,17 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                 break
 
 class portThread(threading.Thread):
+    """
+    Экземпляр данного класса представляет собой поток, в котором поднимается сокет-сервер на указанном порту
+    """
     def __init__(self, port, protocol, connection_id):
+        """
+        При создании экземпляра класса необходимо передать следующие параметры:
+
+        :param port: порт, на котором необходимо развернуть сокет-сервер
+        :param protocol: протокол, на котором будет работать создаваемый сокет-сервер
+        :param connection_id: идентификатор иницилизирующий сессию внутри которой происходит проверка данного порта
+        """
         self.port = port
         self.protocol = protocol
         self.conn_id = connection_id
@@ -832,6 +907,9 @@ class portThread(threading.Thread):
             serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port] = {"sockServ creation": "NOT OK", "serve_forever": "NOT OK", "recv": "NOT OK", "send": "NOT OK"}
 
     def run(self):
+        """
+        Метод осуществляющий запуск сокет-сервера
+        """
         try:
             serverPersonalReports[self.conn_id]["report"]["protocol"][self.protocol][self.port]["serve_forever"] = "OK"
             self.server.serve_forever()
@@ -840,6 +918,9 @@ class portThread(threading.Thread):
             loggerS.error(f"couldn\'t launche serve_forever SocketServer on {hostAddress} {self.protocol} {self.port}")
 
     def stop_server(self):
+        """
+        Метод осуществляющий остановку сокет-сервера
+        """
         try:
             self.server.shutdown()
             loggerS.debug(f"{hostAddress} {self.protocol} {self.port} server was shutdown")
@@ -853,7 +934,18 @@ class portThread(threading.Thread):
 
 
 class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
+    """
+    Экземпляром данного класса является handler сокет-сервера, поднятого для проверки серверного порта,
+    который выполняет обработку соединений установленных с клиентом через порт работающий по TCP протоколу
+    """
     def handle(self):
+        """
+        Метод обрабатывающий спец. сообщения переданные клиентом и подтверждающий установление соединения
+        с клиентом, либо сообщающей об ошибке
+
+        Типы сообщений:
+        - simpleRespond - ответ сервера на клиентский запрос simpleRequest, подтверждающий, что клиент получил доступ к данному порту
+        """
         client_ip = self.client_address[0]
         local_port = self.request.getsockname()[1]
         try:
@@ -894,10 +986,19 @@ class myPortTCPRequestHandler(socketserver.StreamRequestHandler):
             loggerS.error(f"while {flag} operation {client_ip} TCP {local_port} connection was lost")
 
 
-
-
 class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
+    """
+    Экземпляром данного класса является handler сокет-сервера, поднятого для проверки серверного порта,
+    который выполняет обработку сообщений полученных от клиента через порт работающий по UDP протоколу
+    """
     def handle(self):
+        """
+        Метод обрабатывающий спец. сообщения переданные клиентом и подтверждающий доступ
+        клиента к серверу по проверяемому порту, либо сообщающий об ошибке
+
+        Типы сообщений:
+        - simpleRespond - ответ сервера на клиентский запрос simpleRequest, подтверждающий, что клиент получил доступ к данному порту
+        """
         client_ip = self.client_address[0]
         local_port = self.socket.getsockname()[1]
         try:
@@ -941,10 +1042,10 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
             loggerS.error(f"while {flag} operation {client_ip} UDP {local_port} connection was lost")
 
 
-
-
-            ############################################ L A U N C H _ T H E _ P R O G R A M M ##############################
-
+"""
+Анализ указанных параметров и атрибутов при запуске сервиса через терминал
+и запуск сервиса в указанном режиме
+"""
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         print("Choose mode server/client")
@@ -991,18 +1092,23 @@ if __name__ == "__main__":
                               (session_id text, client_ip text, server_ip text, server_name text, respond_time text, TCP text, UDP text, status text, ERROR text)""")
             for key1, value1 in mainReport.items():
                 if key1 != "problems":
-                    for key2, value2 in value1.items():
-                        for key3, value3 in value2["report"].items():
-                            if key3 == "TCP":
-                                for key4, value4 in value3.items():
-                                    cursor.execute(f"""INSERT INTO Servers
-                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], key4, "-", value4, "-"])
-                                    conn.commit()
-                            elif key3 == "UDP":
-                                for key4, value4 in value3.items():
-                                    cursor.execute(f"""INSERT INTO Servers
-                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], "-", key4, value4, "-"])
-                                    conn.commit()
+                    if "problem" not in value1.keys():
+                        for key2, value2 in value1.items():
+                            for key3, value3 in value2["report"].items():
+                                if key3 == "TCP":
+                                    for key4, value4 in value3.items():
+                                        cursor.execute(f"""INSERT INTO Servers
+                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], key4, "-", value4, "-"])
+                                        conn.commit()
+                                elif key3 == "UDP":
+                                    for key4, value4 in value3.items():
+                                        cursor.execute(f"""INSERT INTO Servers
+                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], "-", key4, value4, "-"])
+                                        conn.commit()
+                    else:
+                        cursor.execute(f"""INSERT INTO Servers
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, "-", "-", "-", "-", "-", "-", value1["problem"]])
+                        conn.commit()
         print("Validation was completed")
 
     elif sys.argv[1] == "srv":
