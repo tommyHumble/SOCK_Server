@@ -305,6 +305,7 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
                 msg = rcv.decode()
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                print(f"portListRespond I received {self.server_ip} but didnt LOADS in json:", msg)
                 pyMsg = json.loads(msg)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python object successfully")
                 if pyMsg["type"] == "portListRespond":
@@ -334,7 +335,7 @@ class clientThread(threading.Thread):
                                 "report": serverPortsStatusDic[self.id_statusDic]
                             }
                         serverPortsStatusDic[self.id_statusDic]["status"] = "NOT OK"
-                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = "NOT ALL PORTS WERE ACTIVATED"
+                        serverPortsStatusDic[self.id_statusDic][self.server_ip] = pyMsg["report"]
                         del mainClientReports[self.conn_id]
                         loggerCl.error(f"Not all ports on {self.server_ip} were activated successfully")
                         return
@@ -359,7 +360,6 @@ class clientThread(threading.Thread):
                         portThread = portCheckThread(self.server_ip, port, protocol, self.conn_id)
                         threadList.append(portThread)
                         portThread.start()
-                # Ожидание, когда все потоки завершат свою работу и отчеты на обеих сторонах будет готов
                 for thread in threadList:
                     if thread.isAlive():
                         thread.join()
@@ -418,16 +418,17 @@ class clientThread(threading.Thread):
                     loggerCl.debug(f"serverReportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully")
 
                     flag = "recv serverReportRespond"
-                    rcv = sock.recv(16284)
-                    # rcv = b""
-                    # while True:
-                    #     rcv_part = sock.recv(4096)
-                    #     rcv += rcv_part
-                    #     if len(rcv_part) < 4096:
-                    #         break
+                    #rcv = sock.recv(16284)
+                    rcv = b""
+                    while True:
+                        rcv_part = sock.recv(4096)
+                        rcv += rcv_part
+                        if len(rcv_part) < 4096:
+                            break
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was recieved successfully")
                     msg = rcv.decode()
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
+                    print(f"serverReportRespond from {self.server_ip} before json:", msg)
                     pyMsg = json.loads(msg)
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded in python obj successfully")
                     if pyMsg["type"] == "serverReportRespond":
@@ -520,12 +521,15 @@ class portCheckThread(threading.Thread):
                     loggerCl.error(f"Timeout/Connection problems with {self.server_ip} TCP {self.server_port} while {flag} operation")
                     if flag == "TCP port connection":
                         mainClientReports[self.conn_id]["report"]["protocol"]["TCP"][self.server_port] = {"connection": "NOT OK", "sendall": "NOT OK", "recv": "NOT OK"}
+                        return
 
                 except json.JSONDecodeError:
                     loggerCl.error(f"While {flag} message {self.server_ip} TCP {self.server_port} wasn\'t decoded in json/python successfully")
+                    return
 
                 except InterruptedError:
                     loggerCl.error(f"{flag} operations with {self.server_ip} TCP {self.server_port} was interrupted")
+                    return
 
 
         elif self.protocol == "UDP":
@@ -694,6 +698,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                       "connection id": conn_id,
                       "report": mainfinalReports
                     }
+                    print(f"serverReportRespond i send before json to {self.client_address}:", serverReportRespond)
                     serverReportRespond = json.dumps(serverReportRespond)
                     loggerS.debug(f"serverReportRespond for {client_ip} TCP {local_port} was decoded into json string successfully")
                     self.request.sendall(bytes(serverReportRespond, encoding='utf-8'))
@@ -715,6 +720,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                       "message": "OK"
                     }
                     portListRespond = json.dumps(portListRespond)
+                    print(f"portListRespond I send to {self.client_address}:", portListRespond)
                     self.request.sendall(bytes(portListRespond, encoding='utf-8'))
                     loggerS.debug(f"portListRespond was sent to {self.client_address[0]} successfully")
                     serverPersonalReports[conn_id] = {
@@ -963,52 +969,40 @@ if __name__ == "__main__":
                             server.join()
                     if serversStatusDic[id_statusDic]["status"] == "OK":
                         print("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
-                        conn = sqlite3.connect("reports.db")
-                        cursor = conn.cursor()
-                        cursor.execute("""DROP TABLE IF EXISTS Servers""")
-                        cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
-                                          (ip_address text, status text)""")
-                        for key, value in serversStatusDic[id_statusDic].items():
-                            if key != "status":
-                                cursor.execute(f"""INSERT INTO Servers
-                                                  VALUES (?, ?)""", [key, value])
-                                conn.commit()
-
                         if serverPortsStatusDic[id_statusDic]["status"] == "OK":
                             print("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
                             for id in mainClientReports.keys():
                                 finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                         else:
                             print("Not all servers activated ports")
-                            cursor.execute("""DROP TABLE IF EXISTS Servers_ports""")
-                            cursor.execute("""CREATE TABLE IF NOT EXISTS Servers_ports
-                                              (ip_address text, UP text, DOWN text)""")
-                            for key, value in serversStatusDic[id_statusDic].items():
-                                if key != "status":
-                                    cursor.execute(f"""INSERT INTO Servers
-                                                      VALUES (?, ?)""", [key, value])
-                                    conn.commit()
-
-
                     else:
                         print("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
-                        conn = sqlite3.connect("reports.db")
-                        cursor = conn.cursor()
-                        cursor.execute("""DROP TABLE IF EXISTS Servers""")
-                        cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
-                                          (ip_address text, status text)""")
-                        for key, value in serversStatusDic[id_statusDic].items():
-                            if key != "status":
-                                cursor.execute(f"""INSERT INTO Servers
-                                                  VALUES (?, ?)""", [key, value])
-                                conn.commit()
 
             except json.JSONDecodeError:
                 print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
         else:
             print("Unknown arguments were given")
         if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
-            print("Main report:", form_final_report(finalReports, finalServerReports))
+            mainReport = form_final_report(finalReports, finalServerReports)
+            print("Main report:", mainReport)
+            conn = sqlite3.connect("reports.db")
+            cursor = conn.cursor()
+            cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
+                              (session_id text, client_ip text, server_ip text, server_name text, respond_time text, TCP text, UDP text, status text, ERROR text)""")
+            for key1, value1 in mainReport.items():
+                if key1 != "problems":
+                    for key2, value2 in value1.items():
+                        for key3, value3 in value2["report"].items():
+                            if key3 == "TCP":
+                                for key4, value4 in value3.items():
+                                    cursor.execute(f"""INSERT INTO Servers
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], key4, "-", value4, "-"])
+                                    conn.commit()
+                            elif key3 == "UDP":
+                                for key4, value4 in value3.items():
+                                    cursor.execute(f"""INSERT INTO Servers
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], "-", key4, value4, "-"])
+                                    conn.commit()
         print("Validation was completed")
 
     elif sys.argv[1] == "srv":
