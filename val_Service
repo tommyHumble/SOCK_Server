@@ -474,7 +474,7 @@ class clientThread(threading.Thread):
                 return
 
             except json.JSONDecodeError:
-                loggerCl.error(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded in json/python successfully")
+                loggerCl.error(f"While {flag}, message {self.server_ip} TCP {self.server_main_port} wasn\'t decoded in json/python successfully: {msg}")
                 return
 
             except UnicodeDecodeError:
@@ -562,7 +562,7 @@ class portCheckThread(threading.Thread):
                         return
 
                 except json.JSONDecodeError:
-                    loggerCl.error(f"While {flag} message {self.server_ip} TCP {self.server_port} wasn\'t decoded in json/python successfully")
+                    loggerCl.error(f"While {flag} message {self.server_ip} TCP {self.server_port} wasn\'t decoded in json/python successfully: {msg}")
                     return
 
                 except InterruptedError:
@@ -609,7 +609,7 @@ class portCheckThread(threading.Thread):
                     loggerCl.error(f"Timeout error with {self.server_ip} UDP {self.server_port} while {flag} operation")
 
                 except json.JSONDecodeError:
-                    loggerCl.error(f"While {flag} message {self.server_ip} UDP {self.server_port} wasn\'t decoded in json/python successfully")
+                    loggerCl.error(f"While {flag} message {self.server_ip} UDP {self.server_port} wasn\'t decoded in json/python successfully: {msg}")
 
                 except InterruptedError:
                     loggerCl.error(f"{flag} operations with {self.server_ip} UDP {self.server_port} was interrupted")
@@ -724,7 +724,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     continue
 
                 elif pyMsg["type"] == "reportRequest":
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     loggerS.debug(f"reportRequest was received from {client_ip} on main TCP {local_port} successfully: {pyMsg}")
                     flag = "sendall reportRespond"
                     reportRespond = json.dumps(serverPersonalReports[conn_id])
@@ -812,6 +812,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                     break
 
                 flag = "sendall activePortList"
+                time.sleep(0.3)
                 activePortListRespond = {
                   "type": "activePortListRespond",
                   "command": "mainCheck",
@@ -871,7 +872,7 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
                 break
 
             except json.decoder.JSONDecodeError:
-                loggerS.error(f"{flag} from {client_ip} TCP {local_port} wasn't decoded json/python")
+                loggerS.error(f"{flag} {client_ip} TCP {local_port} wasn't decoded json/python")
                 break
 
             except InterruptedError:
@@ -1072,18 +1073,18 @@ if __name__ == "__main__":
                         if server.isAlive():
                             server.join()
                     if serversStatusDic[id_statusDic]["status"] == "OK":
-                        loggerCl.info("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                        loggerCl.info(f"All servers are available on TCP 3242: {serversStatusDic[id_statusDic]}")
                         print("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
                         if serverPortsStatusDic[id_statusDic]["status"] == "OK":
-                            loggerCl.info("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
+                            loggerCl.info(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
                             print("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
                             for id in mainClientReports.keys():
                                 finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
                         else:
-                            loggerCl.warning("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
-                            print("Not all servers activated ports")
+                            loggerCl.warning(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
+                            print("Not all servers activated ports", serverPortsStatusDic[id_statusDic])
                     else:
-                        loggerCl.warning("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                        loggerCl.warning(f"Not all servers are available on TCP 3242:{serversStatusDic[id_statusDic]}")
                         print("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
 
             except json.JSONDecodeError:
@@ -1092,7 +1093,6 @@ if __name__ == "__main__":
             print("Unknown arguments were given")
         if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
             mainReport = form_final_report(finalReports, finalServerReports)
-            print("Main report:", mainReport)
             try:
                 conn = sqlite3.connect("reports.db")
                 cursor = conn.cursor()
@@ -1118,8 +1118,15 @@ if __name__ == "__main__":
                                                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, "-", "-", "-", "-", "-", "-", value1["problem"]])
                             conn.commit()
             except:
-                loggerCl.error("Didn\'t manage to upload data into DB correctly")
+                loggerCl.exception("Didn\'t manage to upload data into DB correctly")
                 print("Didn\'t manage to upload data into DB correctly")
+            try:
+                mainReport = json.dumps(mainReport)
+                with open("val_Service_report.json", "w") as w_f:
+                    w_f.write(mainReport)
+            except:
+                loggerCl.error("Didn\'t manage to write report in json file")
+            print("Main report:", mainReport)
         print("Validation was completed")
 
     elif sys.argv[1] == "srv":
