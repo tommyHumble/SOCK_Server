@@ -181,6 +181,62 @@ def form_final_report(client_reports, server_reports):
                             final_report["problems"][report["client address"]]["report"][ip] = value
     return final_report
 
+def config_check(file_name):
+    try:
+        problems_dic = {}
+        num = 1
+        with open(file_name, 'r') as f_r:
+            serversList = json.load(f_r)
+            for server in serversList:
+                if "ip" not in server.keys():
+                    problems_dic[f"{num} server"] = "ip field"
+                    num += 1
+                    continue
+                else:
+                    if type(server["ip"]) != str:
+                        problems_dic[f"{num} server"] = "ip type"
+                        continue
+                if "ports" not in server.keys():
+                    problems_dic[f"{num} server"] = "ports field"
+                    num += 1
+                    continue
+                else:
+                    if type(server["ports"]) != dict:
+                        problems_dic[f"{num} server"] = "ports type"
+                        num += 1
+                        continue
+                    else:
+                        if len(server["ports"]) > 2:
+                            problems_dic[f"{num} server"] = "ports protocols more then 2"
+                            num += 1
+                            continue
+                for prot, ports in server["ports"].items():
+                    if prot != "TCP" and prot != "UDP":
+                        problems_dic[f"{num} server"] = f"{prot} is not available key"
+                        break
+                    else:
+                        if type(server["ports"][prot]) != list:
+                            problems_dic[f"{num} server"] = f"all ports must be written in list format"
+                            break
+                        else:
+                            for port in ports:
+                                if type(port) != int:
+                                    problems_dic[f"{num} server"] = f"{port} must be integer"
+                                    break
+                num += 1
+            if problems_dic:
+                return (1, problems_dic)
+            else:
+                return (0, serversList)
+    except FileNotFoundError:
+        print("File wasn\'t found. Check the name of the configuration file.")
+        return (2, problems_dic)
+    except json.JSONDecodeError:
+        print("File is not a valid JSON document. Check the structure of the configuration file.")
+        return (3, problems_dic)
+    except:
+        print("Unknown error was raised while validation of the configuration file.")
+        return (4, problems_dic)
 
 # Настройка логирования на стороне сервера
 loggerS = logging.getLogger("Server_Side")
@@ -459,7 +515,7 @@ class clientThread(threading.Thread):
                         loggerCl.error(f"Unknown message from {self.server_ip} TCP {self.server_main_port} was received. Expected reportRespond")
                         return
 
-            except (ConnectionError, socket.timeout):
+            except (ConnectionError, socket.timeout, OSError):
                 if flag == "main connection":
                     loggerCl.error(f"Connection with {self.server_ip} TCP {self.server_main_port} wasn\'t settled")
                     serversStatusDic[self.id_statusDic]["status"] = "NOT OK"
@@ -1056,104 +1112,106 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         print("Choose mode server/client")
-    elif sys.argv[1] == 'cl':
-        if len(sys.argv) == 2:
+    elif len(sys.argv) == 2:
+        if sys.argv[1] == "cl":
             print("Choose file with list of servers")
-        elif len(sys.argv) == 3:
-            serverListFileName = sys.argv[2]
-            try:
-                with open(serverListFileName, 'r') as f_r:
-                    serversList = json.load(f_r)
-                    checkList = []
-                    id_statusDic = str(uuid.uuid4())
-                    serversStatusDic[id_statusDic] = {"status": "OK"}
-                    serverPortsStatusDic[id_statusDic] = {"status": "OK"}
-                    for server in serversList:
-                        thread = clientThread(server["ip"], 3242, server["ports"], serversList, id_statusDic, "main")
-                        checkList.append(thread)
-                        thread.start()
-                    for server in checkList:
-                        if server.isAlive():
-                            server.join()
-                    if serversStatusDic[id_statusDic]["status"] == "OK":
-                        loggerCl.info(f"All servers are available on TCP 3242: {serversStatusDic[id_statusDic]}")
-                        print("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
-                        if serverPortsStatusDic[id_statusDic]["status"] == "OK":
-                            loggerCl.info(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
-                            print("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
-                            for id in mainClientReports.keys():
-                                finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
-                        else:
-                            loggerCl.warning(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
-                            print("Not all servers activated ports", serverPortsStatusDic[id_statusDic])
+            exit()
+        elif sys.argv[1] == "srv":
+            mainThread = mainServerThread(hostAddress, 3242)
+            mainThread.start()
+
+            while True:
+                try:
+                    if not mainThread.isAlive():
+                        print("Server can\'t be launched.\nCheck TCP 3242 port.")
+                        break
                     else:
-                        loggerCl.warning(f"Not all servers are available on TCP 3242:{serversStatusDic[id_statusDic]}")
-                        print("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                        time.sleep(60)
+                        print(threading.activeCount() - 2, "active socket-servers:")
+                        for key, value in serveingPorts.items():
+                            if value.isAlive():
+                                print(key)
 
-            except json.JSONDecodeError:
-                print("File with servers formed incorrectly. Check the syntaxis or choose another file.")
-        else:
-            print("Unknown arguments were given")
-        if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
-            mainReport = form_final_report(finalReports, finalServerReports)
-            try:
-                conn = sqlite3.connect("reports.db")
-                cursor = conn.cursor()
-                cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
-                                  (session_id text, client_ip text, server_ip text, server_name text, respond_time text, TCP text, UDP text, status text, ERROR text)""")
-                for key1, value1 in mainReport.items():
-                    if key1 != "problems":
-                        if "problem" not in value1.keys():
-                            for key2, value2 in value1.items():
-                                for key3, value3 in value2["report"].items():
-                                    if key3 == "TCP":
-                                        for key4, value4 in value3.items():
-                                            cursor.execute(f"""INSERT INTO Servers
-                                                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], key4, "-", value4, "-"])
-                                            conn.commit()
-                                    elif key3 == "UDP":
-                                        for key4, value4 in value3.items():
-                                            cursor.execute(f"""INSERT INTO Servers
-                                                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], "-", key4, value4, "-"])
-                                            conn.commit()
-                        else:
-                            cursor.execute(f"""INSERT INTO Servers
-                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, "-", "-", "-", "-", "-", "-", value1["problem"]])
-                            conn.commit()
-            except:
-                loggerCl.exception("Didn\'t manage to upload data into DB correctly")
-                print("Didn\'t manage to upload data into DB correctly")
-            try:
-                mainReport = json.dumps(mainReport)
-                with open("val_Service_report.json", "w") as w_f:
-                    w_f.write(mainReport)
-            except:
-                loggerCl.error("Didn\'t manage to write report in json file")
-            print("Main report:", mainReport)
-        print("Validation was completed")
-
-    elif sys.argv[1] == "srv":
-        mainThread = mainServerThread(hostAddress, 3242)
-        mainThread.start()
-
-        while True:
-            try:
-                if not mainThread.isAlive():
-                    print("Server can\'t be launched.\nCheck TCP 3242 port.")
+                except KeyboardInterrupt:
+                    # for server in serveingPorts.values():
+                    #     server.stop_server()
+                    #     server.join()
+                    mainThread.stop_server()
+                    print("Server was stopped")
                     break
-                else:
-                    time.sleep(60)
-                    print(threading.activeCount() - 2, "active socket-servers:")
-                    for key, value in serveingPorts.items():
-                        if value.isAlive():
-                            print(key)
+            exit()
 
-            except KeyboardInterrupt:
-                # for server in serveingPorts.values():
-                #     server.stop_server()
-                #     server.join()
-                mainThread.stop_server()
-                print("Server was stopped")
-                break
+    elif len(sys.argv) == 3 and sys.argv[1] == "cl":
+        serverListFileName = sys.argv[2]
+        file_checked = config_check(serverListFileName)
+        if file_checked[0] == 0:
+            checkList = []
+            id_statusDic = str(uuid.uuid4())
+            serversStatusDic[id_statusDic] = {"status": "OK"}
+            serverPortsStatusDic[id_statusDic] = {"status": "OK"}
+            for server in file_checked[1]:
+                thread = clientThread(server["ip"], 3242, server["ports"], file_checked[1], id_statusDic, "main")
+                checkList.append(thread)
+                thread.start()
+            for server in checkList:
+                if server.isAlive():
+                    server.join()
+            if serversStatusDic[id_statusDic]["status"] == "OK":
+                loggerCl.info(f"All servers are available on TCP 3242: {serversStatusDic[id_statusDic]}")
+                print("All servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+                if serverPortsStatusDic[id_statusDic]["status"] == "OK":
+                    loggerCl.info(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
+                    print("All ports were activated on servers:", serverPortsStatusDic[id_statusDic])
+                    for id in mainClientReports.keys():
+                        finalReports[id] = form_report(mainClientReports[id], mainServerReports[id])
+                else:
+                    loggerCl.warning(f"All ports were activated on servers: {serverPortsStatusDic[id_statusDic]}")
+                    print("Not all servers activated ports", serverPortsStatusDic[id_statusDic])
+            else:
+                loggerCl.warning(f"Not all servers are available on TCP 3242:{serversStatusDic[id_statusDic]}")
+                print("Not all servers are available on TCP 3242:", serversStatusDic[id_statusDic])
+        else:
+            if file_checked[0] == 1:
+                print("Problems:", file_checked[1])
+            exit()
     else:
-        print("Incorrect arguments were given")
+        print("Unknown arguments were given")
+        exit()
+
+    if serversStatusDic[id_statusDic]["status"] == "OK" and serverPortsStatusDic[id_statusDic]["status"] == "OK":
+        mainReport = form_final_report(finalReports, finalServerReports)
+        try:
+            conn = sqlite3.connect("reports.db")
+            cursor = conn.cursor()
+            cursor.execute("""CREATE TABLE IF NOT EXISTS Servers
+                              (session_id text, client_ip text, server_ip text, server_name text, respond_time text, TCP text, UDP text, status text, ERROR text)""")
+            for key1, value1 in mainReport.items():
+                if key1 != "problems":
+                    if "problem" not in value1.keys():
+                        for key2, value2 in value1.items():
+                            for key3, value3 in value2["report"].items():
+                                if key3 == "TCP":
+                                    for key4, value4 in value3.items():
+                                        cursor.execute(f"""INSERT INTO Servers
+                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], key4, "-", value4, "-"])
+                                        conn.commit()
+                                elif key3 == "UDP":
+                                    for key4, value4 in value3.items():
+                                        cursor.execute(f"""INSERT INTO Servers
+                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, key2, value2["server name"], value2["respond time"], "-", key4, value4, "-"])
+                                        conn.commit()
+                    else:
+                        cursor.execute(f"""INSERT INTO Servers
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", [id_statusDic, key1, "-", "-", "-", "-", "-", "-", value1["problem"]])
+                        conn.commit()
+        except:
+            loggerCl.exception("Didn\'t manage to upload data into DB correctly")
+            print("Didn\'t manage to upload data into DB correctly")
+        try:
+            mainReport = json.dumps(mainReport)
+            with open("val_Service_report.json", "w") as w_f:
+                w_f.write(mainReport)
+        except:
+            loggerCl.error("Didn\'t manage to write report in json file")
+        print("Main report:", mainReport)
+    print("Validation was completed")
