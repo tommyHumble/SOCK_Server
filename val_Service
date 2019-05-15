@@ -128,8 +128,8 @@ def form_final_report(client_reports, server_reports):
     final_report = {"problems": {}}
     for id, report in client_reports.items():
         if report["client address"] not in final_report.keys():
-            final_report[report["client address"]] = {}
-        final_report[report["client address"]][report["server address"]] = {
+            final_report[report["client address"] + " - MCL"] = {}
+        final_report[report["client address"] + " - MCL"][report["server address"]] = {
             "server name": report["server name"],
             "respond time": report["respond time"],
             "report": report["protocol"]
