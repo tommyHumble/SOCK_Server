@@ -1208,7 +1208,7 @@ if __name__ == "__main__":
             loggerCl.exception("Didn\'t manage to upload data into DB correctly")
             print("Didn\'t manage to upload data into DB correctly")
         try:
-            mainReport = json.dumps(mainReport)
+            mainReport = json.dumps(mainReport, indent=4)
             with open("val_Service_report.json", "w") as w_f:
                 w_f.write(mainReport)
         except:
