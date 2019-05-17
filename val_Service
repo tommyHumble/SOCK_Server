@@ -1119,7 +1119,7 @@ if __name__ == "__main__":
         elif sys.argv[1] == "srv":
             mainThread = mainServerThread(hostAddress, 3242)
             mainThread.start()
-
+            print("TCP socket-server on port 3242 is serving...")
             while True:
                 try:
                     if not mainThread.isAlive():
