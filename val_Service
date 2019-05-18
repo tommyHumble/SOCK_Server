@@ -125,10 +125,8 @@ def form_final_report(client_reports, server_reports):
     :param server_reports: Итоговые отчеты серверов, о проделанной работе в качестве клиента из finalServerReports
     :return: Итоговый отчет (type - dict)
     """
-    final_report = {"problems": {}}
+    final_report = {"problems": {}, f"{hostAddress} - MCL": {}}
     for id, report in client_reports.items():
-        if report["client address"] not in final_report.keys():
-            final_report[report["client address"] + " - MCL"] = {}
         final_report[report["client address"] + " - MCL"][report["server address"]] = {
             "server name": report["server name"],
             "respond time": report["respond time"],
@@ -386,7 +384,7 @@ class clientThread(threading.Thread):
                     return
 
                 flag = "recv activePortListResp"
-                rcv = sock.recv(4096)
+                rcv = sock.recv(8192)
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
                 msg = rcv.decode()
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was decoded successfully")
@@ -452,12 +450,12 @@ class clientThread(threading.Thread):
                 loggerCl.debug(f"reportRequest for {self.server_ip} TCP {self.server_main_port} was sent successfully: {reportRequest}")
 
                 flag = "recv reportRespond"
-                # rcv = sock.recv(8192)
+                # rcv = sock.recv(15000)
                 rcv = b""
                 while True:
-                    rcv_part = sock.recv(4096)
+                    rcv_part = sock.recv(512)
                     rcv += rcv_part
-                    if len(rcv_part) < 4096:
+                    if len(rcv_part) < 512:
                         break
                 loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was recieved successfully")
                 msg = rcv.decode()
@@ -499,9 +497,9 @@ class clientThread(threading.Thread):
                     # rcv = sock.recv(16284)
                     rcv = b""
                     while True:
-                        rcv_part = sock.recv(4096)
+                        rcv_part = sock.recv(512)
                         rcv += rcv_part
-                        if len(rcv_part) < 4096:
+                        if len(rcv_part) < 512:
                             break
                     loggerCl.debug(f"Message from {self.server_ip} TCP {self.server_main_port} was received successfully")
                     msg = rcv.decode()
@@ -753,7 +751,13 @@ class mainPortTCPRequestHandler(socketserver.StreamRequestHandler):
         while True:
             try:
                 flag = "main TCP port recv"
-                rcv = self.request.recv(4096)
+                # rcv = self.request.recv(4096)
+                rcv = b""
+                while True:
+                    rcv_part = self.request.recv(4096)
+                    rcv += rcv_part
+                    if len(rcv_part) < 4096:
+                        break
                 if not rcv:
                         loggerS.debug(f"TCP connection on {local_port} with {client_ip} was completed")
                         print(f"TCP connection on {local_port} with {client_ip} was completed")
@@ -1112,6 +1116,7 @@ class myPortUDPRequestHandler(socketserver.DatagramRequestHandler):
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         print("Choose mode server/client")
+        exit()
     elif len(sys.argv) == 2:
         if sys.argv[1] == "cl":
             print("Choose file with list of servers")
